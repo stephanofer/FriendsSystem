@@ -1,0 +1,8 @@
+.gradle/
+build/
+.idea/
+.atl/
+
+# Local dependency/source checkouts not part of this repo
+cloud-minecraft/
+boosted-yaml/

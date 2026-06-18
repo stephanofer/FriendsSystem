@@ -1,0 +1,58 @@
+config-version: 2
+
+database:
+  host: "127.0.0.1"
+  port: 3306
+  database: "hera_network"
+  username: "friends"
+  password: "change-me"
+  table-prefix: "friends_"
+
+network-player-settings:
+  enabled: true
+  table-prefix: "nps_"
+  default-language: "es"
+
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  database: 0
+  username: ""
+  password: ""
+  ssl: false
+  key-prefix: "hera"
+  environment: "prod"
+  server-id: "velocity-1"
+
+friends:
+  request-expiration: "7d"
+  default-limit: 50
+  max-offline-messages: 20
+  offline-message-expiration: "14d"
+  page-size: 10
+  message-max-length: 512
+
+permissions:
+  limit-prefix: "friendssystem.limit."
+  default-limit: 50
+  max-limit-scan: 500
+
+commands:
+  primary: "friends"
+  aliases:
+    - "friend"
+  message-aliases:
+    - "fmsg"
+    - "fm"
+  reply-aliases:
+    - "fr"
+
+cache:
+  friends-ttl: "2m"
+  settings-ttl: "2m"
+  activity-page-ttl: "5s"
+  presence-ttl: "90s"
+
+feedback:
+  actionbar: true
+  sounds: true
