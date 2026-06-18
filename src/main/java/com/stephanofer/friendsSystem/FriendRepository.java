@@ -136,7 +136,7 @@ public final class FriendRepository {
             if (countFriends(connection, sender) >= senderLimit || countFriends(connection, target) >= targetLimit) {
                 throw new IllegalStateException("friend-limit");
             }
-            deleteRequest(connection, sender, target);
+            deleteAnyRequest(connection, sender, target);
             FriendPair pair = Sql.pair(sender, target);
             if (!edgeExists(connection, pair)) {
                 try (PreparedStatement statement = connection.prepareStatement("""
@@ -152,7 +152,7 @@ public final class FriendRepository {
     }
 
     public CompletableFuture<Boolean> deleteRequest(UUID sender, UUID target) {
-        return this.database.update(connection -> deleteRequest(connection, sender, target)).thenApply(rows -> rows > 0);
+        return this.database.update(connection -> deleteActiveRequest(connection, sender, target)).thenApply(rows -> rows > 0);
     }
 
     public CompletableFuture<Boolean> removeFriend(UUID first, UUID second) {
@@ -170,8 +170,8 @@ public final class FriendRepository {
 
     public CompletableFuture<Void> deleteRequestsBetween(UUID first, UUID second) {
         return this.database.execute(connection -> {
-            deleteRequest(connection, first, second);
-            deleteRequest(connection, second, first);
+            deleteAnyRequest(connection, first, second);
+            deleteAnyRequest(connection, second, first);
         });
     }
 
@@ -205,6 +205,35 @@ public final class FriendRepository {
 
     public CompletableFuture<List<PendingRequest>> outgoingRequests(UUID sender) {
         return requests(sender, false);
+    }
+
+    public CompletableFuture<List<Profile>> incomingRequestProfiles(UUID target) {
+        return requestProfiles(target, true);
+    }
+
+    public CompletableFuture<List<Profile>> outgoingRequestProfiles(UUID sender) {
+        return requestProfiles(sender, false);
+    }
+
+    public CompletableFuture<List<Profile>> blockedPlayers(UUID blocker) {
+        return this.database.query(connection -> {
+            List<Profile> profiles = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT p.* FROM %s b JOIN %s p ON p.player_uuid = b.blocked_uuid
+                WHERE b.blocker_uuid = ?
+                ORDER BY p.username_lower ASC
+                LIMIT ?
+                """.formatted(this.database.table("blocks"), this.database.table("profiles")))) {
+                statement.setBytes(1, Sql.uuidBytes(blocker));
+                statement.setInt(2, this.config.commands().suggestions().queryMaxResults());
+                try (ResultSet result = statement.executeQuery()) {
+                    while (result.next()) {
+                        profiles.add(readProfile(result));
+                    }
+                }
+            }
+            return profiles;
+        });
     }
 
     public CompletableFuture<FriendSettings> settings(UUID uuid) {
@@ -353,6 +382,29 @@ public final class FriendRepository {
         });
     }
 
+    private CompletableFuture<List<Profile>> requestProfiles(UUID uuid, boolean incoming) {
+        return this.database.query(connection -> {
+            List<Profile> profiles = new ArrayList<>();
+            String subjectColumn = incoming ? "target_uuid" : "sender_uuid";
+            String profileJoinColumn = incoming ? "sender_uuid" : "target_uuid";
+            try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT p.* FROM %s r JOIN %s p ON p.player_uuid = r.%s
+                WHERE r.%s = ? AND r.expires_at > CURRENT_TIMESTAMP
+                ORDER BY p.username_lower ASC
+                LIMIT ?
+                """.formatted(this.database.table("requests"), this.database.table("profiles"), profileJoinColumn, subjectColumn))) {
+                statement.setBytes(1, Sql.uuidBytes(uuid));
+                statement.setInt(2, this.config.commands().suggestions().queryMaxResults());
+                try (ResultSet result = statement.executeQuery()) {
+                    while (result.next()) {
+                        profiles.add(readProfile(result));
+                    }
+                }
+            }
+            return profiles;
+        });
+    }
+
     private List<Profile> profiles(Connection connection, List<UUID> ids) throws java.sql.SQLException {
         String placeholders = String.join(",", ids.stream().map(_ -> "?").toList());
         try (PreparedStatement statement = connection.prepareStatement(
@@ -419,7 +471,17 @@ public final class FriendRepository {
         }
     }
 
-    private int deleteRequest(Connection connection, UUID sender, UUID target) throws java.sql.SQLException {
+    private int deleteActiveRequest(Connection connection, UUID sender, UUID target) throws java.sql.SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+            "DELETE FROM " + this.database.table("requests") + " WHERE sender_uuid = ? AND target_uuid = ? AND expires_at > CURRENT_TIMESTAMP"
+        )) {
+            statement.setBytes(1, Sql.uuidBytes(sender));
+            statement.setBytes(2, Sql.uuidBytes(target));
+            return statement.executeUpdate();
+        }
+    }
+
+    private int deleteAnyRequest(Connection connection, UUID sender, UUID target) throws java.sql.SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
             "DELETE FROM " + this.database.table("requests") + " WHERE sender_uuid = ? AND target_uuid = ?"
         )) {

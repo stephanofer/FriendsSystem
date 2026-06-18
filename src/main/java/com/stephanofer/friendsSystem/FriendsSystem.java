@@ -52,9 +52,11 @@ public final class FriendsSystem {
     private Database database;
     private RedisClient redis;
     private FriendRepository repository;
+    private FriendSuggestionCache suggestionCache;
     private LuckPermsGateway luckPerms;
     private LanguageService languages;
     private PresenceService presence;
+    private FeedbackService feedback;
     private FriendService friends;
     private SocialMessageService socialMessages;
     private final List<ScheduledTask> tasks = new ArrayList<>();
@@ -104,9 +106,11 @@ public final class FriendsSystem {
             this.redis.ping().join();
 
             this.repository = new FriendRepository(this.database, this.config);
+            this.suggestionCache = new FriendSuggestionCache(this.repository, this.config);
             this.luckPerms = new LuckPermsGateway(this.logger, this.config);
             this.languages = new LanguageService(this.database, this.config);
             this.presence = new PresenceService(this.server, this.redis, this.config);
+            this.feedback = new FeedbackService(this.messages, this.config, this.logger);
             this.friends = new FriendService(
                 this.server,
                 this.repository,
@@ -114,7 +118,9 @@ public final class FriendsSystem {
                 this.luckPerms,
                 this.languages,
                 this.messages,
-                this.config
+                this.config,
+                this.feedback,
+                this.suggestionCache
             );
             this.socialMessages = new SocialMessageService(
                 this.server,
@@ -122,7 +128,8 @@ public final class FriendsSystem {
                 this.presence,
                 this.languages,
                 this.messages,
-                this.config
+                this.config,
+                this.feedback
             );
 
             this.registerCommands();
@@ -148,10 +155,16 @@ public final class FriendsSystem {
             player.getUsername(),
             snapshot.prefix(),
             snapshot.primaryGroup()
-        ));
+        ).thenRun(() -> this.friends.notifyFriendsConnection(player, true, new Profile(
+            player.getUniqueId(),
+            player.getUsername(),
+            player.getUsername().toLowerCase(),
+            snapshot.prefix(),
+            snapshot.primaryGroup(),
+            null
+        ))));
         this.presence.markOnline(player);
         this.socialMessages.deliverOfflineMessages(player);
-        this.friends.notifyFriendsConnection(player, true);
     }
 
     @Subscribe
@@ -175,7 +188,7 @@ public final class FriendsSystem {
         MinecraftExceptionHandler.<CommandSource>createNative()
             .defaultHandlers()
             .registerTo(manager);
-        new FriendCommands(manager, this.server, this.friends, this.socialMessages, this.messages, this.languages, this.config)
+        new FriendCommands(manager, this.server, this.friends, this.socialMessages, this.messages, this.languages, this.config, this.suggestionCache)
             .register();
     }
 

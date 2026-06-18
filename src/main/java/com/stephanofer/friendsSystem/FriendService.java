@@ -11,8 +11,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import net.kyori.adventure.sound.Sound;
-import net.kyori.adventure.key.Key;
 
 public final class FriendService {
 
@@ -23,6 +21,8 @@ public final class FriendService {
     private final LanguageService languages;
     private final Messages messages;
     private final PluginConfig config;
+    private final FeedbackService feedback;
+    private final FriendSuggestionCache suggestions;
     private final Cache<UUID, List<Profile>> friendCache;
 
     public FriendService(
@@ -32,7 +32,9 @@ public final class FriendService {
         LuckPermsGateway luckPerms,
         LanguageService languages,
         Messages messages,
-        PluginConfig config
+        PluginConfig config,
+        FeedbackService feedback,
+        FriendSuggestionCache suggestions
     ) {
         this.server = server;
         this.repository = repository;
@@ -41,6 +43,8 @@ public final class FriendService {
         this.languages = languages;
         this.messages = messages;
         this.config = config;
+        this.feedback = feedback;
+        this.suggestions = suggestions;
         this.friendCache = Caffeine.newBuilder().expireAfterWrite(config.cache().friendsTtl()).build();
     }
 
@@ -85,7 +89,8 @@ public final class FriendService {
                                 send(sender, language, "request.already", "player", target.username());
                                 return;
                             }
-                            send(sender, language, "request.sent", "player", target.username());
+                            this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
+                            feedback(sender, language, "request-sent", "player", target.username());
                             this.server.getPlayer(target.uuid()).ifPresent(targetPlayer -> this.notifyRequest(sender, targetPlayer));
                         });
                         });
@@ -108,15 +113,16 @@ public final class FriendService {
             return this.repository.acceptRequest(sender.uuid(), target.getUniqueId(), senderLimit, targetLimit)
                 .thenAccept(accepted -> {
                     if (!accepted) {
-                        send(target, language, "request.none", "player", sender.username());
+                        send(target, language, "request.none-incoming", "player", sender.username());
                         return;
                     }
                     this.invalidate(target.getUniqueId(), sender.uuid());
-                    send(target, language, "request.accepted", "player", sender.username());
-                    this.server.getPlayer(sender.uuid()).ifPresent(player -> send(
+                    this.suggestions.invalidate(target.getUniqueId(), sender.uuid());
+                    feedback(target, language, "request-accepted", "player", sender.username());
+                    this.server.getPlayer(sender.uuid()).ifPresent(player -> feedback(
                         player,
                         this.languages.language(player),
-                        "request.accepted-target",
+                        "request-accepted-target",
                         "player",
                         target.getUsername()
                     ));
@@ -135,9 +141,21 @@ public final class FriendService {
                 return done();
             }
             Profile sender = optionalSender.get();
-            return this.repository.deleteRequest(sender.uuid(), target.getUniqueId()).thenAccept(deleted ->
-                send(target, language, deleted ? "request.denied" : "request.none", "player", sender.username())
-            );
+            return this.repository.deleteRequest(sender.uuid(), target.getUniqueId()).thenAccept(deleted -> {
+                if (!deleted) {
+                    send(target, language, "request.none-incoming", "player", sender.username());
+                    return;
+                }
+                this.suggestions.invalidate(target.getUniqueId(), sender.uuid());
+                feedback(target, language, "request-denied", "player", sender.username());
+                this.server.getPlayer(sender.uuid()).ifPresent(player -> feedback(
+                    player,
+                    this.languages.language(player),
+                    "request-denied-target",
+                    "player",
+                    target.getUsername()
+                ));
+            });
         });
     }
 
@@ -149,9 +167,14 @@ public final class FriendService {
                 return done();
             }
             Profile target = optionalTarget.get();
-            return this.repository.deleteRequest(sender.getUniqueId(), target.uuid()).thenAccept(deleted ->
-                send(sender, language, deleted ? "request.withdrawn" : "request.none", "player", target.username())
-            );
+            return this.repository.deleteRequest(sender.getUniqueId(), target.uuid()).thenAccept(deleted -> {
+                if (!deleted) {
+                    send(sender, language, "request.none-outgoing", "player", target.username());
+                    return;
+                }
+                this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
+                feedback(sender, language, "request-withdrawn", "player", target.username());
+            });
         });
     }
 
@@ -166,8 +189,13 @@ public final class FriendService {
             return this.repository.removeFriend(sender.getUniqueId(), target.uuid()).thenAccept(removed -> {
                 if (removed) {
                     this.invalidate(sender.getUniqueId(), target.uuid());
+                    this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
                 }
-                send(sender, language, removed ? "friend.removed" : "friend.not-friends", "player", target.username());
+                if (removed) {
+                    feedback(sender, language, "friend-removed", "player", target.username());
+                    return;
+                }
+                send(sender, language, "friend.not-friends", "player", target.username());
             });
         });
     }
@@ -184,13 +212,18 @@ public final class FriendService {
                 send(sender, language, "friend.self");
                 return done();
             }
-            return this.repository.block(sender.getUniqueId(), target.uuid()).thenCompose(_ ->
-                this.repository.deleteRequestsBetween(sender.getUniqueId(), target.uuid()).thenCompose(__ ->
+            return this.repository.block(sender.getUniqueId(), target.uuid()).thenCompose(blocked -> {
+                if (!blocked) {
+                    send(sender, language, "block.already", "player", target.username());
+                    return done();
+                }
+                return this.repository.deleteRequestsBetween(sender.getUniqueId(), target.uuid()).thenCompose(__ ->
                 this.repository.removeFriend(sender.getUniqueId(), target.uuid()).thenAccept(___ -> {
                     this.invalidate(sender.getUniqueId(), target.uuid());
-                    send(sender, language, "block.added", "player", target.username());
-                }))
-            );
+                    this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
+                    feedback(sender, language, "block-added", "player", target.username());
+                }));
+            });
         });
     }
 
@@ -202,9 +235,14 @@ public final class FriendService {
                 return done();
             }
             Profile target = optionalTarget.get();
-            return this.repository.unblock(sender.getUniqueId(), target.uuid()).thenAccept(removed ->
-                send(sender, language, removed ? "block.removed" : "block.none", "player", target.username())
-            );
+            return this.repository.unblock(sender.getUniqueId(), target.uuid()).thenAccept(removed -> {
+                if (removed) {
+                    this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
+                    feedback(sender, language, "block-removed", "player", target.username());
+                    return;
+                }
+                send(sender, language, "block.none", "player", target.username());
+            });
         });
     }
 
@@ -278,20 +316,28 @@ public final class FriendService {
     }
 
     public void notifyFriendsConnection(Player player, boolean joined) {
+        this.repository.findProfileByName(player.getUsername()).thenAccept(profile -> this.notifyFriendsConnection(
+            player,
+            joined,
+            profile.orElse(new Profile(player.getUniqueId(), player.getUsername(), player.getUsername().toLowerCase(), "", "", null))
+        ));
+    }
+
+    public void notifyFriendsConnection(Player player, boolean joined, Profile actor) {
         this.repository.settings(player.getUniqueId()).thenAccept(playerSettings -> {
             if (!playerSettings.showOnlineStatus()) {
                 return;
             }
-        this.friends(player.getUniqueId()).thenAccept(friends -> {
-            for (Profile friend : friends) {
-                this.server.getPlayer(friend.uuid()).ifPresent(target -> this.repository.settings(target.getUniqueId()).thenAccept(settings -> {
-                    if (!settings.showConnectionNotifications()) {
-                        return;
-                    }
-                    send(target, this.languages.language(target), joined ? "notify.join" : "notify.quit", "player", player.getUsername());
-                }));
-            }
-        });
+            this.friends(player.getUniqueId()).thenAccept(friends -> {
+                for (Profile friend : friends) {
+                    this.server.getPlayer(friend.uuid()).ifPresent(target -> this.repository.settings(target.getUniqueId()).thenAccept(settings -> {
+                        if (!settings.showConnectionNotifications()) {
+                            return;
+                        }
+                        this.feedback.send(target, this.languages.language(target), joined ? "friend-join" : "friend-quit", placeholders(actor, null));
+                    }));
+                }
+            });
         });
     }
 
@@ -322,17 +368,15 @@ public final class FriendService {
 
     private void notifyRequest(Player sender, Player target) {
         Language language = this.languages.language(target);
-        target.sendMessage(this.messages.component(language, "request.received", Map.of(
+        this.feedback.send(target, language, "request-received", Map.of(
             "player", sender.getUsername(),
             "accept", "/friend accept " + sender.getUsername(),
             "deny", "/friend deny " + sender.getUsername()
-        )));
-        if (this.config.feedback().actionbar()) {
-            target.sendActionBar(this.messages.component(language, "request.actionbar", Map.of("player", sender.getUsername())));
-        }
-        if (this.config.feedback().sounds()) {
-            target.playSound(Sound.sound(Key.key("minecraft:block.note_block.pling"), Sound.Source.MASTER, 1f, 1.4f), Sound.Emitter.self());
-        }
+        ));
+    }
+
+    private void feedback(Player player, Language language, String action, String placeholder, String value) {
+        this.feedback.send(player, language, action, Map.of(placeholder, Messages.escape(value)));
     }
 
     private Map<String, String> placeholders(Profile profile, PresenceService.PresenceActivity state) {
@@ -349,9 +393,9 @@ public final class FriendService {
             activity = rich.mode() + (rich.map() == null || rich.map().isBlank() ? "" : " - " + rich.map());
         }
         Map<String, String> map = new HashMap<>();
-        map.put("player", profile.username());
-        map.put("prefix", profile.lastKnownPrefix() == null ? "" : profile.lastKnownPrefix());
-        map.put("group", profile.lastKnownPrimaryGroup() == null ? "" : profile.lastKnownPrimaryGroup());
+        map.put("player", Messages.escape(profile.username()));
+        map.put("prefix", profile.lastKnownPrefix() == null ? "" : Messages.escape(profile.lastKnownPrefix()));
+        map.put("group", profile.lastKnownPrimaryGroup() == null ? "" : Messages.escape(profile.lastKnownPrimaryGroup()));
         map.put("status", status);
         map.put("server", server);
         map.put("activity", activity);
@@ -389,7 +433,7 @@ public final class FriendService {
     }
 
     private void send(Player player, Language language, String key, String placeholder, String value) {
-        this.messages.send(player, language, key, Map.of(placeholder, value));
+        this.messages.send(player, language, key, Map.of(placeholder, Messages.escape(value)));
     }
 
     private void send(Player player, Language language, String key, Map<String, String> placeholders) {

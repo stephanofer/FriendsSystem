@@ -18,6 +18,7 @@ public final class SocialMessageService {
     private final LanguageService languages;
     private final Messages messages;
     private final PluginConfig config;
+    private final FeedbackService feedback;
     private final Cache<UUID, UUID> lastMessage = Caffeine.newBuilder().expireAfterWrite(java.time.Duration.ofMinutes(10)).build();
 
     public SocialMessageService(
@@ -26,7 +27,8 @@ public final class SocialMessageService {
         PresenceService presence,
         LanguageService languages,
         Messages messages,
-        PluginConfig config
+        PluginConfig config,
+        FeedbackService feedback
     ) {
         this.server = server;
         this.repository = repository;
@@ -34,6 +36,7 @@ public final class SocialMessageService {
         this.languages = languages;
         this.messages = messages;
         this.config = config;
+        this.feedback = feedback;
     }
 
     public void message(Player sender, String targetName, String message) {
@@ -101,10 +104,10 @@ public final class SocialMessageService {
                 Player targetPlayer = target.get();
                 deliveries.add(this.repository.settings(targetPlayer.getUniqueId()).thenApply(settings -> {
                     if (settings.allowFriendBroadcasts() && !settings.mutedAllFriends()) {
-                        targetPlayer.sendMessage(this.messages.component(this.languages.language(targetPlayer), "message.broadcast-received", Map.of(
+                        this.feedback.send(targetPlayer, this.languages.language(targetPlayer), "friend-broadcast-received", Map.of(
                             "player", sender.getUsername(),
                             "message", normalized
-                        )));
+                        ));
                         return true;
                     }
                     return false;
@@ -123,7 +126,7 @@ public final class SocialMessageService {
                 return;
             }
             Language language = this.languages.language(player);
-            player.sendMessage(this.messages.component(language, "offline.header", Map.of("count", String.valueOf(messages.size()))));
+            this.feedback.send(player, language, "offline-message-delivered", Map.of("count", String.valueOf(messages.size())));
             for (FriendRepository.OfflineMessage message : messages) {
                 this.repository.friends(player.getUniqueId()).thenAccept(_ -> player.sendMessage(this.messages.component(language, "offline.entry", Map.of(
                     "message", message.message(),
@@ -137,14 +140,14 @@ public final class SocialMessageService {
     private void deliver(Player sender, Player target, String message) {
         this.lastMessage.put(sender.getUniqueId(), target.getUniqueId());
         this.lastMessage.put(target.getUniqueId(), sender.getUniqueId());
-        target.sendMessage(this.messages.component(this.languages.language(target), "message.received", Map.of(
+        this.feedback.send(target, this.languages.language(target), "friend-message-received", Map.of(
             "player", sender.getUsername(),
             "message", message
-        )));
-        sender.sendMessage(this.messages.component(this.languages.language(sender), "message.sent", Map.of(
+        ));
+        this.feedback.send(sender, this.languages.language(sender), "friend-message-sent", Map.of(
             "player", target.getUsername(),
             "message", message
-        )));
+        ));
     }
 
     private CompletableFuture<Optional<Profile>> resolveTarget(String name) {
@@ -171,7 +174,7 @@ public final class SocialMessageService {
     }
 
     private void send(Player player, Language language, String key, String placeholder, String value) {
-        this.messages.send(player, language, key, Map.of(placeholder, value));
+        this.messages.send(player, language, key, Map.of(placeholder, Messages.escape(value)));
     }
 
     private static CompletableFuture<Void> done() {

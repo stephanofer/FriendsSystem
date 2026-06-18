@@ -10,7 +10,11 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 
 public record PluginConfig(
@@ -85,7 +89,13 @@ public record PluginConfig(
                     document.getString("commands.primary").trim(),
                     aliases(document.getStringList("commands.aliases")),
                     aliases(document.getStringList("commands.message-aliases")),
-                    aliases(document.getStringList("commands.reply-aliases"))
+                    aliases(document.getStringList("commands.reply-aliases")),
+                    new Suggestions(
+                        duration(document.getString("commands.suggestions.cache-ttl")),
+                        positive(document.getInt("commands.suggestions.empty-input-max-results"), 20),
+                        positive(document.getInt("commands.suggestions.filtered-max-results"), 50),
+                        positive(document.getInt("commands.suggestions.query-max-results"), 100)
+                    )
                 ),
                 new Cache(
                     duration(document.getString("cache.friends-ttl")),
@@ -93,10 +103,7 @@ public record PluginConfig(
                     duration(document.getString("cache.activity-page-ttl")),
                     duration(document.getString("cache.presence-ttl"))
                 ),
-                new Feedback(
-                    document.getBoolean("feedback.actionbar"),
-                    document.getBoolean("feedback.sounds")
-                )
+                new Feedback(feedbackActions(document))
             );
         }
     }
@@ -137,18 +144,110 @@ public record PluginConfig(
         return List.copyOf(labels);
     }
 
+    public static Map<String, FeedbackAction> feedbackActions(YamlDocument document) {
+        Map<String, FeedbackAction> actions = new HashMap<>();
+        if (!document.isSection("feedback.actions")) {
+            return Map.of();
+        }
+        for (Object key : document.getSection("feedback.actions").getKeys()) {
+            String action = String.valueOf(key);
+            List<FeedbackOutput> outputs = new ArrayList<>();
+            for (Map<?, ?> output : document.getMapList("feedback.actions." + action + ".outputs", List.of())) {
+                FeedbackOutput parsed = feedbackOutput(output);
+                if (parsed != null) {
+                    outputs.add(parsed);
+                }
+            }
+            actions.put(action, new FeedbackAction(List.copyOf(outputs)));
+        }
+        return Map.copyOf(actions);
+    }
+
+    private static FeedbackOutput feedbackOutput(Map<?, ?> output) {
+        String type = string(output, "type", "CHAT").toUpperCase(Locale.ROOT);
+        String message = string(output, "message", "");
+        String sound = string(output, "sound", "minecraft:block.note_block.pling");
+        String source = string(output, "source", "MASTER").toUpperCase(Locale.ROOT);
+        float volume = decimal(output, "volume", 1.0f);
+        float pitch = decimal(output, "pitch", 1.0f);
+        String title = string(output, "title", message);
+        String subtitle = string(output, "subtitle", "");
+        return new FeedbackOutput(type, message, sound, source, volume, pitch, title, subtitle);
+    }
+
+    private static String string(Map<?, ?> map, String key, String fallback) {
+        Object value = map.get(key);
+        return value == null ? fallback : String.valueOf(value);
+    }
+
+    private static float decimal(Map<?, ?> map, String key, float fallback) {
+        Object value = map.get(key);
+        if (value instanceof Number number) {
+            return number.floatValue();
+        }
+        if (value != null) {
+            try {
+                return Float.parseFloat(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    private static int positive(Integer value, int fallback) {
+        return value == null || value <= 0 ? fallback : value;
+    }
+
     public record Database(String host, int port, String database, String username, String password, String tablePrefix) {}
     public record NetworkPlayerSettings(boolean enabled, String tablePrefix, Language defaultLanguage) {}
     public record Redis(String host, int port, int database, String username, String password, boolean ssl, String keyPrefix, String environment, String serverId) {}
     public record Friends(Duration requestExpiration, int defaultLimit, int maxOfflineMessages, Duration offlineMessageExpiration, int pageSize, int messageMaxLength) {}
     public record Permissions(String limitPrefix, int defaultLimit, int maxLimitScan) {}
-    public record Commands(String primary, List<String> aliases, List<String> messageAliases, List<String> replyAliases) {
+    public record Commands(String primary, List<String> aliases, List<String> messageAliases, List<String> replyAliases, Suggestions suggestions) {
         public List<String> labels() {
             return commandLabels(this.primary, this.aliases);
         }
     }
+    public record Suggestions(Duration cacheTtl, int emptyInputMaxResults, int filteredMaxResults, int queryMaxResults) {}
     public record Cache(Duration friendsTtl, Duration settingsTtl, Duration activityPageTtl, Duration presenceTtl) {}
-    public record Feedback(boolean actionbar, boolean sounds) {}
+    public record Feedback(Map<String, FeedbackAction> actions) {
+        public FeedbackAction action(String key) {
+            return this.actions.getOrDefault(key, FeedbackAction.chat(defaultFeedbackMessage(key)));
+        }
+
+        public FeedbackAction fallback(String key) {
+            return FeedbackAction.chat(defaultFeedbackMessage(key));
+        }
+
+        private static String defaultFeedbackMessage(String action) {
+            return switch (action) {
+                case "request-received" -> "request.received";
+                case "request-sent" -> "request.sent";
+                case "request-accepted" -> "request.accepted";
+                case "request-accepted-target" -> "request.accepted-target";
+                case "request-denied" -> "request.denied";
+                case "request-denied-target" -> "request.denied-target";
+                case "request-withdrawn" -> "request.withdrawn";
+                case "friend-removed" -> "friend.removed";
+                case "block-added" -> "block.added";
+                case "block-removed" -> "block.removed";
+                case "friend-message-sent" -> "message.sent";
+                case "friend-message-received" -> "message.received";
+                case "friend-broadcast-received" -> "message.broadcast-received";
+                case "friend-join" -> "notify.join";
+                case "friend-quit" -> "notify.quit";
+                case "offline-message-delivered" -> "offline.header";
+                default -> action;
+            };
+        }
+    }
+    public record FeedbackAction(List<FeedbackOutput> outputs) {
+        public static FeedbackAction chat(String messageKey) {
+            return new FeedbackAction(List.of(new FeedbackOutput("CHAT", messageKey, "", "MASTER", 1.0f, 1.0f, messageKey, "")));
+        }
+    }
+    public record FeedbackOutput(String type, String message, String sound, String source, float volume, float pitch, String title, String subtitle) {}
 
     public List<String> socialSettingKeys() {
         return List.of(

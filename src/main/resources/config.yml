@@ -1,4 +1,4 @@
-config-version: 2
+config-version: 3
 
 database:
   host: "127.0.0.1"
@@ -46,6 +46,11 @@ commands:
     - "fm"
   reply-aliases:
     - "fr"
+  suggestions:
+    cache-ttl: "5s"
+    empty-input-max-results: 20
+    filtered-max-results: 50
+    query-max-results: 100
 
 cache:
   friends-ttl: "2m"
@@ -54,5 +59,80 @@ cache:
   presence-ttl: "90s"
 
 feedback:
-  actionbar: true
-  sounds: true
+  actions:
+    request-received:
+      outputs:
+        - type: CHAT
+          message: "request.received"
+        - type: ACTION_BAR
+          message: "request.actionbar"
+        - type: SOUND
+          sound: "minecraft:block.note_block.pling"
+          source: "MASTER"
+          volume: 1.0
+          pitch: 1.4
+    request-sent:
+      outputs:
+        - type: CHAT
+          message: "request.sent"
+    request-accepted:
+      outputs:
+        - type: CHAT
+          message: "request.accepted"
+    request-accepted-target:
+      outputs:
+        - type: CHAT
+          message: "request.accepted-target"
+    request-denied:
+      outputs:
+        - type: CHAT
+          message: "request.denied"
+    request-denied-target:
+      outputs:
+        - type: CHAT
+          message: "request.denied-target"
+        - type: SOUND
+          sound: "minecraft:block.note_block.bass"
+          source: "MASTER"
+          volume: 1.0
+          pitch: 0.8
+    request-withdrawn:
+      outputs:
+        - type: CHAT
+          message: "request.withdrawn"
+    friend-removed:
+      outputs:
+        - type: CHAT
+          message: "friend.removed"
+    block-added:
+      outputs:
+        - type: CHAT
+          message: "block.added"
+    block-removed:
+      outputs:
+        - type: CHAT
+          message: "block.removed"
+    friend-message-sent:
+      outputs:
+        - type: CHAT
+          message: "message.sent"
+    friend-message-received:
+      outputs:
+        - type: CHAT
+          message: "message.received"
+    friend-broadcast-received:
+      outputs:
+        - type: CHAT
+          message: "message.broadcast-received"
+    friend-join:
+      outputs:
+        - type: CHAT
+          message: "notify.join"
+    friend-quit:
+      outputs:
+        - type: CHAT
+          message: "notify.quit"
+    offline-message-delivered:
+      outputs:
+        - type: CHAT
+          message: "offline.header"
