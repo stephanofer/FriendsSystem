@@ -40,6 +40,12 @@ class PluginConfigTest {
         assertEquals(20, config.commands().suggestions().emptyInputMaxResults());
         assertEquals(50, config.commands().suggestions().filteredMaxResults());
         assertEquals(100, config.commands().suggestions().queryMaxResults());
+        assertEquals(50, config.limits().friends().defaultLimit());
+        assertEquals("friendssystem.limit.vip", config.limits().friends().permissions().get(1).permission());
+        assertEquals(100, config.limits().friends().permissions().get(1).limit());
+        assertEquals(20, config.limits().offlineMessages().defaultLimit());
+        assertEquals("friendssystem.offline-messages.vip", config.limits().offlineMessages().permissions().get(1).permission());
+        assertEquals(50, config.limits().offlineMessages().permissions().get(1).limit());
         assertEquals("CHAT", config.feedback().action("request-received").outputs().getFirst().type());
         assertTrue(config.feedback().action("request-received").outputs().stream().anyMatch(output -> output.type().equals("SOUND")));
     }

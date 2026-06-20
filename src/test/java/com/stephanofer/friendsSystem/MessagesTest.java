@@ -32,7 +32,7 @@ class MessagesTest {
         Messages loaded = Messages.load(this.tempDir);
 
         assertEquals(
-            "<gradient:#6fffe9:#5bc0be><bold>FriendsSystem</bold></gradient> <gray>Comandos disponibles</gray>",
+            "<gradient:#6fffe9:#5bc0be><bold>FriendsSystem</bold></gradient> <dark_gray>·</dark_gray> <gray>Click en un comando para usarlo rápido</gray>",
             loaded.raw(Language.ES, "help.header", Map.of("command", "friends"))
         );
     }

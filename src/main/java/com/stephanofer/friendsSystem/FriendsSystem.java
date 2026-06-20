@@ -8,11 +8,13 @@ import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PostLoginEvent;
+import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.PluginContainer;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
+import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.scheduler.ScheduledTask;
 import com.hera.craftkit.database.Database;
@@ -26,6 +28,9 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import org.incendo.cloud.SenderMapper;
 import org.incendo.cloud.execution.ExecutionCoordinator;
@@ -60,6 +65,7 @@ public final class FriendsSystem {
     private FriendService friends;
     private SocialMessageService socialMessages;
     private final List<ScheduledTask> tasks = new ArrayList<>();
+    private final Set<UUID> offlineInboxNotified = ConcurrentHashMap.newKeySet();
 
     @Inject
     public FriendsSystem(
@@ -129,7 +135,8 @@ public final class FriendsSystem {
                 this.languages,
                 this.messages,
                 this.config,
-                this.feedback
+                this.feedback,
+                this.luckPerms
             );
 
             this.registerCommands();
@@ -164,7 +171,18 @@ public final class FriendsSystem {
             null
         ))));
         this.presence.markOnline(player);
-        this.socialMessages.deliverOfflineMessages(player);
+    }
+
+    @Subscribe
+    public void onServerConnected(ServerConnectedEvent event) {
+        Player player = event.getPlayer();
+        if (!this.offlineInboxNotified.add(player.getUniqueId())) {
+            return;
+        }
+        this.server.getScheduler()
+            .buildTask(this, () -> this.server.getPlayer(player.getUniqueId()).ifPresent(this.socialMessages::notifyOfflineMessages))
+            .delay(1, TimeUnit.SECONDS)
+            .schedule();
     }
 
     @Subscribe
@@ -173,6 +191,7 @@ public final class FriendsSystem {
         this.presence.markOffline(player);
         this.repository.markLastSeen(player.getUniqueId());
         this.languages.evict(player.getUniqueId());
+        this.offlineInboxNotified.remove(player.getUniqueId());
         this.friends.notifyFriendsConnection(player, false);
     }
 

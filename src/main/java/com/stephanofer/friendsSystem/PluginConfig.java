@@ -22,7 +22,7 @@ public record PluginConfig(
     NetworkPlayerSettings networkPlayerSettings,
     Redis redis,
     Friends friends,
-    Permissions permissions,
+    Limits limits,
     Commands commands,
     Cache cache,
     Feedback feedback
@@ -74,16 +74,19 @@ public record PluginConfig(
                 ),
                 new Friends(
                     duration(document.getString("friends.request-expiration")),
-                    document.getInt("friends.default-limit"),
-                    document.getInt("friends.max-offline-messages"),
                     duration(document.getString("friends.offline-message-expiration")),
                     document.getInt("friends.page-size"),
                     document.getInt("friends.message-max-length")
                 ),
-                new Permissions(
-                    document.getString("permissions.limit-prefix"),
-                    document.getInt("permissions.default-limit"),
-                    document.getInt("permissions.max-limit-scan")
+                new Limits(
+                    new LimitGroup(
+                        positive(document.getInt("limits.friends.default"), positive(document.getInt("friends.default-limit"), 50)),
+                        permissionLimits(document, "limits.friends.permissions")
+                    ),
+                    new LimitGroup(
+                        positive(document.getInt("limits.offline-messages.default"), positive(document.getInt("friends.max-offline-messages"), 20)),
+                        permissionLimits(document, "limits.offline-messages.permissions")
+                    )
                 ),
                 new Commands(
                     document.getString("commands.primary").trim(),
@@ -163,6 +166,18 @@ public record PluginConfig(
         return Map.copyOf(actions);
     }
 
+    private static List<PermissionLimit> permissionLimits(YamlDocument document, String path) {
+        List<PermissionLimit> limits = new ArrayList<>();
+        for (Map<?, ?> entry : document.getMapList(path, List.of())) {
+            String permission = string(entry, "permission", "").trim();
+            int limit = positive(integer(entry, "limit", 0), 0);
+            if (!permission.isEmpty() && limit > 0) {
+                limits.add(new PermissionLimit(permission, limit));
+            }
+        }
+        return List.copyOf(limits);
+    }
+
     private static FeedbackOutput feedbackOutput(Map<?, ?> output) {
         String type = string(output, "type", "CHAT").toUpperCase(Locale.ROOT);
         String message = string(output, "message", "");
@@ -195,6 +210,21 @@ public record PluginConfig(
         return fallback;
     }
 
+    private static int integer(Map<?, ?> map, String key, int fallback) {
+        Object value = map.get(key);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null) {
+            try {
+                return Integer.parseInt(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
     private static int positive(Integer value, int fallback) {
         return value == null || value <= 0 ? fallback : value;
     }
@@ -202,8 +232,10 @@ public record PluginConfig(
     public record Database(String host, int port, String database, String username, String password, String tablePrefix) {}
     public record NetworkPlayerSettings(boolean enabled, String tablePrefix, Language defaultLanguage) {}
     public record Redis(String host, int port, int database, String username, String password, boolean ssl, String keyPrefix, String environment, String serverId) {}
-    public record Friends(Duration requestExpiration, int defaultLimit, int maxOfflineMessages, Duration offlineMessageExpiration, int pageSize, int messageMaxLength) {}
-    public record Permissions(String limitPrefix, int defaultLimit, int maxLimitScan) {}
+    public record Friends(Duration requestExpiration, Duration offlineMessageExpiration, int pageSize, int messageMaxLength) {}
+    public record Limits(LimitGroup friends, LimitGroup offlineMessages) {}
+    public record LimitGroup(int defaultLimit, List<PermissionLimit> permissions) {}
+    public record PermissionLimit(String permission, int limit) {}
     public record Commands(String primary, List<String> aliases, List<String> messageAliases, List<String> replyAliases, Suggestions suggestions) {
         public List<String> labels() {
             return commandLabels(this.primary, this.aliases);
@@ -237,7 +269,7 @@ public record PluginConfig(
                 case "friend-broadcast-received" -> "message.broadcast-received";
                 case "friend-join" -> "notify.join";
                 case "friend-quit" -> "notify.quit";
-                case "offline-message-delivered" -> "offline.header";
+                case "offline-message-notice" -> "offline.notice";
                 default -> action;
             };
         }

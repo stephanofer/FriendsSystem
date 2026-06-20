@@ -114,6 +114,26 @@ public final class FriendCommands {
             .permission("friendssystem.command.friend")
             .handler(context -> this.player(context.sender(), this.friends::pending)));
         this.manager.command(this.manager.commandBuilder(root)
+            .literal("inbox")
+            .permission("friendssystem.command.friend")
+            .handler(context -> this.player(context.sender(), player -> this.messages.inbox(player, 1))));
+        this.manager.command(this.manager.commandBuilder(root)
+            .literal("inbox")
+            .required("page", integerParser(1))
+            .permission("friendssystem.command.friend")
+            .handler(context -> this.player(context.sender(), player -> this.messages.inbox(player, context.get("page")))));
+        this.manager.command(this.manager.commandBuilder(root)
+            .literal("inbox")
+            .literal("read")
+            .required("id", stringParser(), this.inboxIdSuggestions())
+            .permission("friendssystem.command.friend")
+            .handler(context -> this.player(context.sender(), player -> this.messages.markInboxRead(player, context.get("id")))));
+        this.manager.command(this.manager.commandBuilder(root)
+            .literal("inbox")
+            .literal("clear")
+            .permission("friendssystem.command.friend")
+            .handler(context -> this.player(context.sender(), this.messages::clearInbox)));
+        this.manager.command(this.manager.commandBuilder(root)
             .literal("toggle")
             .required("setting", stringParser(), this.settingSuggestions())
             .permission("friendssystem.command.friend")
@@ -190,6 +210,18 @@ public final class FriendCommands {
         ));
     }
 
+    private SuggestionProvider<CommandSource> inboxIdSuggestions() {
+        return (context, input) -> {
+            if (!(context.sender() instanceof Player player)) {
+                return CompletableFuture.completedFuture(List.of());
+            }
+            return this.messages.recentInboxIds(player.getUniqueId()).thenApply(ids -> this.toSuggestions(
+                ids.stream().map(id -> new UUIDName(null, id)).toList(),
+                input
+            ));
+        };
+    }
+
     private List<Suggestion> toSuggestions(List<UUIDName> names, CommandInput input) {
         String prefix = input.lastRemainingToken().toLowerCase();
         int limit = prefix.isBlank()
@@ -204,7 +236,23 @@ public final class FriendCommands {
     }
 
     private void help(CommandSource source, String root) {
-        Map<String, String> placeholders = Map.of("command", root);
+        Map<String, String> placeholders = Map.ofEntries(
+            Map.entry("command", root),
+            Map.entry("add_command", "/" + root + " add "),
+            Map.entry("accept_command", "/" + root + " accept "),
+            Map.entry("deny_command", "/" + root + " deny "),
+            Map.entry("withdraw_command", "/" + root + " withdraw "),
+            Map.entry("remove_command", "/" + root + " remove "),
+            Map.entry("list_command", "/" + root + " list"),
+            Map.entry("pending_command", "/" + root + " pending"),
+            Map.entry("inbox_command", "/" + root + " inbox"),
+            Map.entry("block_command", "/" + root + " block "),
+            Map.entry("unblock_command", "/" + root + " unblock "),
+            Map.entry("msg_command", "/" + root + " msg "),
+            Map.entry("reply_command", "/" + root + " reply "),
+            Map.entry("broadcast_command", "/" + root + " broadcast "),
+            Map.entry("toggle_command", "/" + root + " toggle ")
+        );
         if (source instanceof Player player) {
             this.sendHelp(source, this.languages.language(player), placeholders);
             return;
@@ -222,6 +270,7 @@ public final class FriendCommands {
             "help.remove",
             "help.list",
             "help.pending",
+            "help.inbox",
             "help.block",
             "help.unblock",
             "help.msg",

@@ -109,8 +109,10 @@ public final class FriendService {
             }
             Profile sender = optionalSender.get();
             int targetLimit = this.luckPerms.friendLimit(target);
-            int senderLimit = this.server.getPlayer(sender.uuid()).map(this.luckPerms::friendLimit).orElse(this.config.permissions().defaultLimit());
-            return this.repository.acceptRequest(sender.uuid(), target.getUniqueId(), senderLimit, targetLimit)
+            CompletableFuture<Integer> senderLimit = this.server.getPlayer(sender.uuid())
+                .map(player -> CompletableFuture.completedFuture(this.luckPerms.friendLimit(player)))
+                .orElseGet(() -> this.luckPerms.friendLimit(sender.uuid()));
+            return senderLimit.thenCompose(limit -> this.repository.acceptRequest(sender.uuid(), target.getUniqueId(), limit, targetLimit))
                 .thenAccept(accepted -> {
                     if (!accepted) {
                         send(target, language, "request.none-incoming", "player", sender.username());
@@ -250,7 +252,7 @@ public final class FriendService {
         Language language = this.languages.language(viewer);
         this.friends(viewer.getUniqueId()).thenCompose(friends -> {
             if (friends.isEmpty()) {
-                send(viewer, language, "list.empty");
+                send(viewer, language, "list.empty", Map.of("command", this.config.commands().primary()));
                 return done();
             }
             int pageSize = this.config.friends().pageSize();
@@ -268,7 +270,8 @@ public final class FriendService {
                 viewer.sendMessage(this.messages.component(language, "list.header", Map.of(
                     "page", String.valueOf(currentPage),
                     "pages", String.valueOf(maxPage),
-                    "total", String.valueOf(friends.size())
+                    "total", String.valueOf(friends.size()),
+                    "command", this.config.commands().primary()
                 )));
                 for (int index = 0; index < visible.size(); index++) {
                     Profile profile = visible.get(index);
@@ -287,8 +290,22 @@ public final class FriendService {
         CompletableFuture<List<PendingRequest>> outgoing = this.repository.outgoingRequests(player.getUniqueId());
         incoming.thenCombine(outgoing, (in, out) -> {
             player.sendMessage(this.messages.component(language, "pending.header", Map.of()));
-            player.sendMessage(this.messages.component(language, "pending.incoming", Map.of("players", names(in))));
-            player.sendMessage(this.messages.component(language, "pending.outgoing", Map.of("players", names(out))));
+            if (in.isEmpty()) {
+                player.sendMessage(this.messages.component(language, "pending.incoming-empty", Map.of()));
+            } else {
+                player.sendMessage(this.messages.component(language, "pending.incoming-title", Map.of("count", String.valueOf(in.size()))));
+                for (PendingRequest request : in) {
+                    player.sendMessage(this.messages.component(language, "pending.incoming-entry", pendingPlaceholders(request)));
+                }
+            }
+            if (out.isEmpty()) {
+                player.sendMessage(this.messages.component(language, "pending.outgoing-empty", Map.of()));
+            } else {
+                player.sendMessage(this.messages.component(language, "pending.outgoing-title", Map.of("count", String.valueOf(out.size()))));
+                for (PendingRequest request : out) {
+                    player.sendMessage(this.messages.component(language, "pending.outgoing-entry", pendingPlaceholders(request)));
+                }
+            }
             return null;
         });
     }
@@ -394,8 +411,9 @@ public final class FriendService {
         }
         Map<String, String> map = new HashMap<>();
         map.put("player", Messages.escape(profile.username()));
-        map.put("prefix", profile.lastKnownPrefix() == null ? "" : Messages.escape(profile.lastKnownPrefix()));
+        map.put("prefix", profile.lastKnownPrefix() == null ? "" : profile.lastKnownPrefix());
         map.put("group", profile.lastKnownPrimaryGroup() == null ? "" : Messages.escape(profile.lastKnownPrimaryGroup()));
+        map.put("message_command", "/" + this.config.commands().primary() + " msg " + profile.username() + " ");
         map.put("status", status);
         map.put("server", server);
         map.put("activity", activity);
@@ -412,15 +430,14 @@ public final class FriendService {
         return state;
     }
 
-    private String names(List<PendingRequest> requests) {
-        if (requests.isEmpty()) {
-            return "-";
-        }
-        List<String> names = new ArrayList<>();
-        for (PendingRequest request : requests) {
-            names.add(request.username());
-        }
-        return String.join(", ", names);
+    private Map<String, String> pendingPlaceholders(PendingRequest request) {
+        String player = Messages.escape(request.username());
+        return Map.of(
+            "player", player,
+            "accept_command", "/" + this.config.commands().primary() + " accept " + request.username(),
+            "deny_command", "/" + this.config.commands().primary() + " deny " + request.username(),
+            "withdraw_command", "/" + this.config.commands().primary() + " withdraw " + request.username()
+        );
     }
 
     private void invalidate(UUID first, UUID second) {

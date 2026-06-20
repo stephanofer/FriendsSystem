@@ -273,11 +273,11 @@ public final class FriendRepository {
         }).thenRun(() -> this.settingsCache.invalidate(uuid));
     }
 
-    public CompletableFuture<Void> storeOfflineMessage(UUID sender, UUID target, String message) {
+    public CompletableFuture<Void> storeOfflineMessage(UUID sender, UUID target, String message, int limit) {
         Instant expiresAt = Instant.now().plus(this.config.friends().offlineMessageExpiration());
-        return this.database.execute(connection -> {
+        return this.database.transaction(TransactionOptions.serializable(), connection -> {
             int pending = pendingOfflineCount(connection, target);
-            if (pending >= this.config.friends().maxOfflineMessages()) {
+            if (pending >= limit) {
                 throw new IllegalStateException("offline-message-limit");
             }
             try (PreparedStatement statement = connection.prepareStatement("""
@@ -289,24 +289,33 @@ public final class FriendRepository {
                 statement.setTimestamp(4, Timestamp.from(expiresAt));
                 statement.executeUpdate();
             }
+            return null;
         });
     }
 
-    public CompletableFuture<List<OfflineMessage>> claimOfflineMessages(UUID target) {
+    public CompletableFuture<Integer> pendingOfflineMessageCount(UUID target) {
+        return this.database.query(connection -> pendingOfflineCount(connection, target));
+    }
+
+    public CompletableFuture<List<OfflineMessage>> offlineMessages(UUID target, int page, int pageSize) {
+        int offset = Math.max(0, page - 1) * pageSize;
         return this.database.query(connection -> {
             List<OfflineMessage> messages = new ArrayList<>();
             try (PreparedStatement statement = connection.prepareStatement("""
-                SELECT id, sender_uuid, message, created_at FROM %s
-                WHERE target_uuid = ? AND delivered_at IS NULL AND expires_at > CURRENT_TIMESTAMP
-                ORDER BY created_at ASC LIMIT ?
-                """.formatted(this.database.table("offline_messages")))) {
+                SELECT m.id, m.sender_uuid, COALESCE(p.username, 'Jugador') AS sender_name, m.message, m.created_at
+                FROM %s m LEFT JOIN %s p ON p.player_uuid = m.sender_uuid
+                WHERE m.target_uuid = ? AND m.delivered_at IS NULL AND m.expires_at > CURRENT_TIMESTAMP
+                ORDER BY m.created_at ASC LIMIT ? OFFSET ?
+                """.formatted(this.database.table("offline_messages"), this.database.table("profiles")))) {
                 statement.setBytes(1, Sql.uuidBytes(target));
-                statement.setInt(2, this.config.friends().maxOfflineMessages());
+                statement.setInt(2, pageSize);
+                statement.setInt(3, offset);
                 try (ResultSet result = statement.executeQuery()) {
                     while (result.next()) {
                         messages.add(new OfflineMessage(
                             result.getLong("id"),
                             Sql.uuid(result, "sender_uuid"),
+                            result.getString("sender_name"),
                             result.getString("message"),
                             result.getTimestamp("created_at").toInstant()
                         ));
@@ -317,19 +326,27 @@ public final class FriendRepository {
         });
     }
 
-    public CompletableFuture<Void> markOfflineMessagesDelivered(List<Long> ids) {
-        if (ids.isEmpty()) {
-            return CompletableFuture.completedFuture(null);
-        }
-        return this.database.execute(connection -> {
-            try (PreparedStatement statement = connection.prepareStatement(
-                "UPDATE " + this.database.table("offline_messages") + " SET delivered_at = CURRENT_TIMESTAMP WHERE id = ?"
-            )) {
-                for (Long id : ids) {
-                    statement.setLong(1, id);
-                    statement.addBatch();
-                }
-                statement.executeBatch();
+    public CompletableFuture<Boolean> markOfflineMessageRead(UUID target, long id) {
+        return this.database.update(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE %s SET delivered_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND target_uuid = ? AND delivered_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+                """.formatted(this.database.table("offline_messages")))) {
+                statement.setLong(1, id);
+                statement.setBytes(2, Sql.uuidBytes(target));
+                return statement.executeUpdate();
+            }
+        }).thenApply(rows -> rows > 0);
+    }
+
+    public CompletableFuture<Integer> markAllOfflineMessagesRead(UUID target) {
+        return this.database.update(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE %s SET delivered_at = CURRENT_TIMESTAMP
+                WHERE target_uuid = ? AND delivered_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+                """.formatted(this.database.table("offline_messages")))) {
+                statement.setBytes(1, Sql.uuidBytes(target));
+                return statement.executeUpdate();
             }
         });
     }
@@ -516,6 +533,6 @@ public final class FriendRepository {
         }
     }
 
-    public record OfflineMessage(long id, UUID senderUuid, String message, Instant createdAt) {
+    public record OfflineMessage(long id, UUID senderUuid, String senderName, String message, Instant createdAt) {
     }
 }

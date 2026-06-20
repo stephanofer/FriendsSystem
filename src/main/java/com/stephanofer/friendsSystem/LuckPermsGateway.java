@@ -38,15 +38,19 @@ public final class LuckPermsGateway {
     }
 
     public int friendLimit(Player player) {
-        int best = this.config.permissions().defaultLimit();
-        int max = Math.max(best, this.config.permissions().maxLimitScan());
-        String prefix = this.config.permissions().limitPrefix();
-        for (int limit = best + 1; limit <= max; limit++) {
-            if (player.hasPermission(prefix + limit)) {
-                best = limit;
-            }
-        }
-        return best;
+        return playerLimit(player, this.config.limits().friends());
+    }
+
+    public int offlineMessageLimit(Player player) {
+        return playerLimit(player, this.config.limits().offlineMessages());
+    }
+
+    public CompletableFuture<Integer> friendLimit(UUID uuid) {
+        return userLimit(uuid, this.config.limits().friends());
+    }
+
+    public CompletableFuture<Integer> offlineMessageLimit(UUID uuid) {
+        return userLimit(uuid, this.config.limits().offlineMessages());
     }
 
     public CompletableFuture<LuckPermsSnapshot> loadOfflineSnapshot(UUID uuid) {
@@ -59,6 +63,35 @@ public final class LuckPermsGateway {
     private static LuckPermsSnapshot snapshot(User user) {
         var meta = user.getCachedData().getMetaData();
         return new LuckPermsSnapshot(nullToEmpty(meta.getPrefix()), nullToEmpty(user.getPrimaryGroup()));
+    }
+
+    private int playerLimit(Player player, PluginConfig.LimitGroup group) {
+        int best = group.defaultLimit();
+        for (PluginConfig.PermissionLimit permission : group.permissions()) {
+            if (permission.limit() > best && player.hasPermission(permission.permission())) {
+                best = permission.limit();
+            }
+        }
+        return best;
+    }
+
+    private CompletableFuture<Integer> userLimit(UUID uuid, PluginConfig.LimitGroup group) {
+        if (this.luckPerms == null) {
+            return CompletableFuture.completedFuture(group.defaultLimit());
+        }
+        return this.luckPerms.getUserManager().loadUser(uuid).thenApply(user -> {
+            int best = group.defaultLimit();
+            var permissions = user.getCachedData().getPermissionData(user.getQueryOptions());
+            for (PluginConfig.PermissionLimit permission : group.permissions()) {
+                if (permission.limit() > best && permissions.checkPermission(permission.permission()).asBoolean()) {
+                    best = permission.limit();
+                }
+            }
+            return best;
+        }).exceptionally(throwable -> {
+            this.logger.warn("Unable to resolve LuckPerms limits for {}. Using default limit.", uuid, throwable);
+            return group.defaultLimit();
+        });
     }
 
     private static String nullToEmpty(String value) {

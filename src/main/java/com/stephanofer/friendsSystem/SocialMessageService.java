@@ -4,13 +4,18 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 public final class SocialMessageService {
+
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm").withZone(ZoneId.systemDefault());
 
     private final ProxyServer server;
     private final FriendRepository repository;
@@ -19,7 +24,10 @@ public final class SocialMessageService {
     private final Messages messages;
     private final PluginConfig config;
     private final FeedbackService feedback;
+    private final LuckPermsGateway luckPerms;
     private final Cache<UUID, UUID> lastMessage = Caffeine.newBuilder().expireAfterWrite(java.time.Duration.ofMinutes(10)).build();
+    private final Cache<UUID, Integer> offlineCountCache;
+    private final Cache<InboxPageKey, List<FriendRepository.OfflineMessage>> offlinePageCache;
 
     public SocialMessageService(
         ProxyServer server,
@@ -28,7 +36,8 @@ public final class SocialMessageService {
         LanguageService languages,
         Messages messages,
         PluginConfig config,
-        FeedbackService feedback
+        FeedbackService feedback,
+        LuckPermsGateway luckPerms
     ) {
         this.server = server;
         this.repository = repository;
@@ -37,6 +46,9 @@ public final class SocialMessageService {
         this.messages = messages;
         this.config = config;
         this.feedback = feedback;
+        this.luckPerms = luckPerms;
+        this.offlineCountCache = Caffeine.newBuilder().expireAfterWrite(java.time.Duration.ofSeconds(10)).build();
+        this.offlinePageCache = Caffeine.newBuilder().expireAfterWrite(java.time.Duration.ofSeconds(10)).build();
     }
 
     public void message(Player sender, String targetName, String message) {
@@ -67,9 +79,21 @@ public final class SocialMessageService {
                         deliver(sender, onlineTarget.get(), normalized);
                         return done();
                     }
-                    return this.repository.storeOfflineMessage(sender.getUniqueId(), target.uuid(), normalized).thenAccept(_ ->
-                        send(sender, language, "message.offline-stored", "player", target.username())
-                    );
+                    CompletableFuture<Integer> limit = onlineTarget
+                        .map(player -> CompletableFuture.completedFuture(this.luckPerms.offlineMessageLimit(player)))
+                        .orElseGet(() -> this.luckPerms.offlineMessageLimit(target.uuid()));
+                    return limit.thenCompose(max -> this.repository.storeOfflineMessage(sender.getUniqueId(), target.uuid(), normalized, max))
+                        .thenAccept(_ -> {
+                            invalidateOfflineInbox(target.uuid());
+                            send(sender, language, "message.offline-stored", "player", target.username());
+                        }).exceptionally(throwable -> {
+                            if (isOfflineMessageLimit(throwable)) {
+                                send(sender, language, "message.offline-full", "player", target.username());
+                            } else {
+                                send(sender, language, "message.offline-failed", "player", target.username());
+                            }
+                            return null;
+                        });
                 });
             });
         });
@@ -120,21 +144,88 @@ public final class SocialMessageService {
         });
     }
 
-    public void deliverOfflineMessages(Player player) {
-        this.repository.claimOfflineMessages(player.getUniqueId()).thenAccept(messages -> {
-            if (messages.isEmpty()) {
+    public void notifyOfflineMessages(Player player) {
+        pendingOfflineCount(player.getUniqueId()).thenAccept(count -> {
+            if (count <= 0) {
                 return;
             }
             Language language = this.languages.language(player);
-            this.feedback.send(player, language, "offline-message-delivered", Map.of("count", String.valueOf(messages.size())));
-            for (FriendRepository.OfflineMessage message : messages) {
-                this.repository.friends(player.getUniqueId()).thenAccept(_ -> player.sendMessage(this.messages.component(language, "offline.entry", Map.of(
-                    "message", message.message(),
-                    "sender", message.senderUuid().toString()
-                ))));
-            }
-            this.repository.markOfflineMessagesDelivered(messages.stream().map(FriendRepository.OfflineMessage::id).toList());
+            this.feedback.send(player, language, "offline-message-notice", Map.of(
+                "count", String.valueOf(count),
+                "command", this.config.commands().primary(),
+                "inbox_command", "/" + this.config.commands().primary() + " inbox"
+            ));
         });
+    }
+
+    public void inbox(Player player, int page) {
+        Language language = this.languages.language(player);
+        int pageSize = this.config.friends().pageSize();
+        pendingOfflineCount(player.getUniqueId()).thenCompose(total -> {
+            if (total <= 0) {
+                send(player, language, "offline.empty");
+                return done();
+            }
+            int pages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
+            int safePage = Math.max(1, Math.min(page, pages));
+            return offlinePage(player.getUniqueId(), safePage).thenAccept(messages -> {
+                player.sendMessage(this.messages.component(language, "offline.inbox-header", Map.of(
+                    "page", String.valueOf(safePage),
+                    "pages", String.valueOf(pages),
+                    "total", String.valueOf(total),
+                    "count", String.valueOf(total),
+                    "command", this.config.commands().primary()
+                )));
+                for (FriendRepository.OfflineMessage message : messages) {
+                    player.sendMessage(this.messages.component(language, "offline.inbox-entry", Map.of(
+                        "id", String.valueOf(message.id()),
+                        "sender", Messages.escape(message.senderName()),
+                        "message", message.message(),
+                        "date", DATE_FORMAT.format(message.createdAt()),
+                        "read_command", "/" + this.config.commands().primary() + " inbox read " + message.id(),
+                        "reply_command", "/" + this.config.commands().primary() + " msg " + message.senderName() + " "
+                    )));
+                }
+            });
+        });
+    }
+
+    public void markInboxRead(Player player, String idText) {
+        Language language = this.languages.language(player);
+        long id;
+        try {
+            id = Long.parseLong(idText);
+        } catch (NumberFormatException exception) {
+            send(player, language, "offline.not-found");
+            return;
+        }
+        this.repository.markOfflineMessageRead(player.getUniqueId(), id).thenAccept(read -> {
+            if (!read) {
+                send(player, language, "offline.not-found");
+                return;
+            }
+            invalidateOfflineInbox(player.getUniqueId());
+            send(player, language, "offline.read");
+        });
+    }
+
+    public void clearInbox(Player player) {
+        Language language = this.languages.language(player);
+        this.repository.markAllOfflineMessagesRead(player.getUniqueId()).thenAccept(count -> {
+            invalidateOfflineInbox(player.getUniqueId());
+            this.messages.send(player, language, "offline.clear", Map.of("count", String.valueOf(count)));
+        });
+    }
+
+    public CompletableFuture<List<String>> recentInboxIds(UUID player) {
+        List<String> ids = this.offlinePageCache.asMap().entrySet().stream()
+            .filter(entry -> entry.getKey().player().equals(player))
+            .flatMap(entry -> entry.getValue().stream())
+            .map(message -> String.valueOf(message.id()))
+            .distinct()
+            .sorted()
+            .toList();
+        return CompletableFuture.completedFuture(ids);
     }
 
     private void deliver(Player sender, Player target, String message) {
@@ -169,6 +260,42 @@ public final class SocialMessageService {
         return Messages.escape(normalized);
     }
 
+    private CompletableFuture<Integer> pendingOfflineCount(UUID player) {
+        Integer cached = this.offlineCountCache.getIfPresent(player);
+        if (cached != null) {
+            return CompletableFuture.completedFuture(cached);
+        }
+        return this.repository.pendingOfflineMessageCount(player).thenApply(count -> {
+            this.offlineCountCache.put(player, count);
+            return count;
+        });
+    }
+
+    private CompletableFuture<List<FriendRepository.OfflineMessage>> offlinePage(UUID player, int page) {
+        InboxPageKey key = new InboxPageKey(player, page);
+        List<FriendRepository.OfflineMessage> cached = this.offlinePageCache.getIfPresent(key);
+        if (cached != null) {
+            return CompletableFuture.completedFuture(cached);
+        }
+        return this.repository.offlineMessages(player, page, this.config.friends().pageSize()).thenApply(messages -> {
+            this.offlinePageCache.put(key, messages);
+            return messages;
+        });
+    }
+
+    private void invalidateOfflineInbox(UUID player) {
+        this.offlineCountCache.invalidate(player);
+        this.offlinePageCache.asMap().keySet().removeIf(key -> key.player().equals(player));
+    }
+
+    private static boolean isOfflineMessageLimit(Throwable throwable) {
+        Throwable current = throwable;
+        while (current instanceof CompletionException && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current instanceof IllegalStateException && "offline-message-limit".equals(current.getMessage());
+    }
+
     private void send(Player player, Language language, String key) {
         this.messages.send(player, language, key, Map.of());
     }
@@ -179,5 +306,8 @@ public final class SocialMessageService {
 
     private static CompletableFuture<Void> done() {
         return CompletableFuture.completedFuture(null);
+    }
+
+    private record InboxPageKey(UUID player, int page) {
     }
 }

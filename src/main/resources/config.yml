@@ -1,4 +1,4 @@
-config-version: 3
+config-version: 5
 
 database:
   host: "127.0.0.1"
@@ -26,16 +26,25 @@ redis:
 
 friends:
   request-expiration: "7d"
-  default-limit: 50
-  max-offline-messages: 20
   offline-message-expiration: "14d"
   page-size: 10
   message-max-length: 512
 
-permissions:
-  limit-prefix: "friendssystem.limit."
-  default-limit: 50
-  max-limit-scan: 500
+limits:
+  friends:
+    default: 50
+    permissions:
+      - permission: "friendssystem.limit.default"
+        limit: 50
+      - permission: "friendssystem.limit.vip"
+        limit: 100
+  offline-messages:
+    default: 20
+    permissions:
+      - permission: "friendssystem.offline-messages.default"
+        limit: 20
+      - permission: "friendssystem.offline-messages.vip"
+        limit: 50
 
 commands:
   primary: "friends"
@@ -132,7 +141,7 @@ feedback:
       outputs:
         - type: CHAT
           message: "notify.quit"
-    offline-message-delivered:
+    offline-message-notice:
       outputs:
         - type: CHAT
-          message: "offline.header"
+          message: "offline.notice"
