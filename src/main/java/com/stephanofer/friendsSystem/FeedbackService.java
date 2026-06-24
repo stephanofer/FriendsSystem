@@ -5,6 +5,7 @@ import java.util.Locale;
 import java.util.Map;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.sound.Sound;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.title.Title;
 import org.slf4j.Logger;
 
@@ -21,6 +22,10 @@ public final class FeedbackService {
     }
 
     public void send(Player player, Language language, String action, Map<String, String> placeholders) {
+        this.send(player, language, action, placeholders, TagResolver.empty());
+    }
+
+    public void send(Player player, Language language, String action, Map<String, String> placeholders, TagResolver resolver) {
         PluginConfig.FeedbackAction feedback = this.config.feedback().action(action);
         if (feedback.outputs().stream().anyMatch(output -> "NONE".equalsIgnoreCase(output.type()))) {
             return;
@@ -32,17 +37,17 @@ public final class FeedbackService {
             return;
         }
         for (PluginConfig.FeedbackOutput output : feedback.outputs()) {
-            this.sendOutput(player, language, output, placeholders);
+            this.sendOutput(player, language, output, placeholders, resolver);
         }
     }
 
-    private void sendOutput(Player player, Language language, PluginConfig.FeedbackOutput output, Map<String, String> placeholders) {
+    private void sendOutput(Player player, Language language, PluginConfig.FeedbackOutput output, Map<String, String> placeholders, TagResolver resolver) {
         switch (output.type().toUpperCase(Locale.ROOT)) {
-            case "CHAT" -> player.sendMessage(this.messages.component(language, output.message(), placeholders));
-            case "ACTION_BAR" -> player.sendActionBar(this.messages.component(language, output.message(), placeholders));
+            case "CHAT" -> player.sendMessage(this.messages.component(language, output.message(), placeholders, resolver));
+            case "ACTION_BAR" -> player.sendActionBar(this.messages.component(language, output.message(), placeholders, resolver));
             case "TITLE" -> player.showTitle(Title.title(
-                this.messages.component(language, output.title(), placeholders),
-                output.subtitle().isBlank() ? net.kyori.adventure.text.Component.empty() : this.messages.component(language, output.subtitle(), placeholders)
+                this.messages.component(language, output.title(), placeholders, resolver),
+                output.subtitle().isBlank() ? net.kyori.adventure.text.Component.empty() : this.messages.component(language, output.subtitle(), placeholders, resolver)
             ));
             case "SOUND" -> this.playSound(player, output);
             case "CENTER" -> this.logger.warn("Ignoring unsupported CENTER feedback output");

@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 
 public final class FriendService {
 
@@ -18,7 +19,7 @@ public final class FriendService {
     private final FriendRepository repository;
     private final PresenceService presence;
     private final LuckPermsGateway luckPerms;
-    private final LanguageService languages;
+    private final ProxySettingsGateway proxySettings;
     private final Messages messages;
     private final PluginConfig config;
     private final FeedbackService feedback;
@@ -30,7 +31,7 @@ public final class FriendService {
         FriendRepository repository,
         PresenceService presence,
         LuckPermsGateway luckPerms,
-        LanguageService languages,
+        ProxySettingsGateway proxySettings,
         Messages messages,
         PluginConfig config,
         FeedbackService feedback,
@@ -40,7 +41,7 @@ public final class FriendService {
         this.repository = repository;
         this.presence = presence;
         this.luckPerms = luckPerms;
-        this.languages = languages;
+        this.proxySettings = proxySettings;
         this.messages = messages;
         this.config = config;
         this.feedback = feedback;
@@ -49,10 +50,10 @@ public final class FriendService {
     }
 
     public void add(Player sender, String targetName) {
-        Language language = this.languages.language(sender);
+        Language language = this.proxySettings.language(sender);
         this.resolveTarget(targetName).thenCompose(optionalTarget -> {
             if (optionalTarget.isEmpty()) {
-                send(sender, language, "friend.not-found", "player", targetName);
+                send(sender, language, "friend.not-found", "player_name", targetName);
                 return done();
             }
             Profile target = optionalTarget.get();
@@ -68,7 +69,7 @@ public final class FriendService {
                 }
                 return this.repository.areFriends(sender.getUniqueId(), target.uuid()).thenCompose(areFriends -> {
                     if (areFriends) {
-                        send(sender, language, "friend.already", "player", target.username());
+                        send(sender, language, "friend.already", target);
                         return done();
                     }
                     return this.repository.isBlocked(target.uuid(), sender.getUniqueId()).thenCombine(
@@ -76,21 +77,21 @@ public final class FriendService {
                         (blockedByTarget, blockedBySender) -> blockedByTarget || blockedBySender
                     ).thenCompose(blocked -> {
                         if (blocked) {
-                            send(sender, language, "friend.not-found", "player", targetName);
+                            send(sender, language, "friend.not-found", "player_name", targetName);
                             return done();
                         }
                         return this.repository.requestExists(target.uuid(), sender.getUniqueId()).thenCompose(reverseRequest -> {
                             if (reverseRequest) {
-                                send(sender, language, "request.crossed", "player", target.username());
+                                send(sender, language, "request.crossed", target);
                                 return done();
                             }
                         return this.repository.createRequest(sender.getUniqueId(), target.uuid()).thenAccept(created -> {
                             if (!created) {
-                                send(sender, language, "request.already", "player", target.username());
+                                send(sender, language, "request.already", target);
                                 return;
                             }
                             this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
-                            feedback(sender, language, "request-sent", "player", target.username());
+                            feedback(sender, language, "request-sent", target);
                             this.server.getPlayer(target.uuid()).ifPresent(targetPlayer -> this.notifyRequest(sender, targetPlayer));
                         });
                         });
@@ -101,10 +102,10 @@ public final class FriendService {
     }
 
     public void accept(Player target, String senderName) {
-        Language language = this.languages.language(target);
+        Language language = this.proxySettings.language(target);
         this.resolveTarget(senderName).thenCompose(optionalSender -> {
             if (optionalSender.isEmpty()) {
-                send(target, language, "friend.not-found", "player", senderName);
+                send(target, language, "friend.not-found", "player_name", senderName);
                 return done();
             }
             Profile sender = optionalSender.get();
@@ -115,76 +116,74 @@ public final class FriendService {
             return senderLimit.thenCompose(limit -> this.repository.acceptRequest(sender.uuid(), target.getUniqueId(), limit, targetLimit))
                 .thenAccept(accepted -> {
                     if (!accepted) {
-                        send(target, language, "request.none-incoming", "player", sender.username());
+                        send(target, language, "request.none-incoming", sender);
                         return;
                     }
                     this.invalidate(target.getUniqueId(), sender.uuid());
                     this.suggestions.invalidate(target.getUniqueId(), sender.uuid());
-                    feedback(target, language, "request-accepted", "player", sender.username());
+                    feedback(target, language, "request-accepted", sender);
                     this.server.getPlayer(sender.uuid()).ifPresent(player -> feedback(
                         player,
-                        this.languages.language(player),
+                        this.proxySettings.language(player),
                         "request-accepted-target",
-                        "player",
-                        target.getUsername()
+                        new Profile(target.getUniqueId(), target.getUsername(), target.getUsername().toLowerCase(), "", "", null)
                     ));
                 }).exceptionally(throwable -> {
-                    send(target, language, "friend.limit-target", "player", sender.username());
+                    send(target, language, "friend.limit-target", sender);
                     return null;
                 });
         });
     }
 
     public void deny(Player target, String senderName) {
-        Language language = this.languages.language(target);
+        Language language = this.proxySettings.language(target);
         this.resolveTarget(senderName).thenCompose(optionalSender -> {
             if (optionalSender.isEmpty()) {
-                send(target, language, "friend.not-found", "player", senderName);
+                send(target, language, "friend.not-found", "player_name", senderName);
                 return done();
             }
             Profile sender = optionalSender.get();
             return this.repository.deleteRequest(sender.uuid(), target.getUniqueId()).thenAccept(deleted -> {
                 if (!deleted) {
-                    send(target, language, "request.none-incoming", "player", sender.username());
+                    send(target, language, "request.none-incoming", sender);
                     return;
                 }
                 this.suggestions.invalidate(target.getUniqueId(), sender.uuid());
-                feedback(target, language, "request-denied", "player", sender.username());
+                feedback(target, language, "request-denied", sender);
                 this.server.getPlayer(sender.uuid()).ifPresent(player -> feedback(
                     player,
-                    this.languages.language(player),
+                    this.proxySettings.language(player),
                     "request-denied-target",
-                    "player",
-                    target.getUsername()
+                    new Profile(target.getUniqueId(), target.getUsername(), target.getUsername().toLowerCase(), "", "", null)
                 ));
             });
         });
     }
 
     public void withdraw(Player sender, String targetName) {
-        Language language = this.languages.language(sender);
+        Language language = this.proxySettings.language(sender);
         this.resolveTarget(targetName).thenCompose(optionalTarget -> {
             if (optionalTarget.isEmpty()) {
-                send(sender, language, "friend.not-found", "player", targetName);
+                send(sender, language, "friend.not-found", "player_name", targetName);
                 return done();
             }
             Profile target = optionalTarget.get();
             return this.repository.deleteRequest(sender.getUniqueId(), target.uuid()).thenAccept(deleted -> {
                 if (!deleted) {
-                    send(sender, language, "request.none-outgoing", "player", target.username());
+                    send(sender, language, "request.none-outgoing", target);
                     return;
                 }
                 this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
-                feedback(sender, language, "request-withdrawn", "player", target.username());
+                feedback(sender, language, "request-withdrawn", target);
             });
         });
     }
 
     public void remove(Player sender, String targetName) {
-        Language language = this.languages.language(sender);
+        Language language = this.proxySettings.language(sender);
         this.resolveTarget(targetName).thenCompose(optionalTarget -> {
             if (optionalTarget.isEmpty()) {
-                send(sender, language, "friend.not-found", "player", targetName);
+                send(sender, language, "friend.not-found", "player_name", targetName);
                 return done();
             }
             Profile target = optionalTarget.get();
@@ -194,19 +193,19 @@ public final class FriendService {
                     this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
                 }
                 if (removed) {
-                    feedback(sender, language, "friend-removed", "player", target.username());
+                    feedback(sender, language, "friend-removed", target);
                     return;
                 }
-                send(sender, language, "friend.not-friends", "player", target.username());
+                send(sender, language, "friend.not-friends", target);
             });
         });
     }
 
     public void block(Player sender, String targetName) {
-        Language language = this.languages.language(sender);
+        Language language = this.proxySettings.language(sender);
         this.resolveTarget(targetName).thenCompose(optionalTarget -> {
             if (optionalTarget.isEmpty()) {
-                send(sender, language, "friend.not-found", "player", targetName);
+                send(sender, language, "friend.not-found", "player_name", targetName);
                 return done();
             }
             Profile target = optionalTarget.get();
@@ -216,40 +215,40 @@ public final class FriendService {
             }
             return this.repository.block(sender.getUniqueId(), target.uuid()).thenCompose(blocked -> {
                 if (!blocked) {
-                    send(sender, language, "block.already", "player", target.username());
+                    send(sender, language, "block.already", target);
                     return done();
                 }
                 return this.repository.deleteRequestsBetween(sender.getUniqueId(), target.uuid()).thenCompose(__ ->
                 this.repository.removeFriend(sender.getUniqueId(), target.uuid()).thenAccept(___ -> {
                     this.invalidate(sender.getUniqueId(), target.uuid());
                     this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
-                    feedback(sender, language, "block-added", "player", target.username());
+                    feedback(sender, language, "block-added", target);
                 }));
             });
         });
     }
 
     public void unblock(Player sender, String targetName) {
-        Language language = this.languages.language(sender);
+        Language language = this.proxySettings.language(sender);
         this.resolveTarget(targetName).thenCompose(optionalTarget -> {
             if (optionalTarget.isEmpty()) {
-                send(sender, language, "friend.not-found", "player", targetName);
+                send(sender, language, "friend.not-found", "player_name", targetName);
                 return done();
             }
             Profile target = optionalTarget.get();
             return this.repository.unblock(sender.getUniqueId(), target.uuid()).thenAccept(removed -> {
                 if (removed) {
                     this.suggestions.invalidate(sender.getUniqueId(), target.uuid());
-                    feedback(sender, language, "block-removed", "player", target.username());
+                    feedback(sender, language, "block-removed", target);
                     return;
                 }
-                send(sender, language, "block.none", "player", target.username());
+                send(sender, language, "block.none", target);
             });
         });
     }
 
     public void list(Player viewer, int page) {
-        Language language = this.languages.language(viewer);
+        Language language = this.proxySettings.language(viewer);
         this.friends(viewer.getUniqueId()).thenCompose(friends -> {
             if (friends.isEmpty()) {
                 send(viewer, language, "list.empty", Map.of("command", this.config.commands().primary()));
@@ -262,7 +261,7 @@ public final class FriendService {
             int to = Math.min(from + pageSize, friends.size());
             List<Profile> visible = friends.subList(from, to);
             List<UUID> ids = visible.stream().map(Profile::uuid).toList();
-            return this.presence.loadPage(viewer.getUniqueId(), currentPage, ids).thenCompose(states -> {
+            return this.proxySettings.loadMany(ids).thenCompose(_ -> this.presence.loadPage(viewer.getUniqueId(), currentPage, ids)).thenCompose(states -> {
                 List<CompletableFuture<FriendSettings>> settingFutures = visible.stream()
                     .map(profile -> this.repository.settings(profile.uuid()))
                     .toList();
@@ -277,7 +276,7 @@ public final class FriendService {
                     Profile profile = visible.get(index);
                     FriendSettings settings = settingFutures.get(index).join();
                     PresenceService.PresenceActivity state = applyPrivacy(states.get(profile.uuid()), settings);
-                    viewer.sendMessage(this.messages.component(language, "list.entry", placeholders(profile, state)));
+                    viewer.sendMessage(this.messages.component(language, "list.entry", placeholders(profile, state), this.playerResolver(profile)));
                 }
                 });
             });
@@ -285,33 +284,37 @@ public final class FriendService {
     }
 
     public void pending(Player player) {
-        Language language = this.languages.language(player);
+        Language language = this.proxySettings.language(player);
         CompletableFuture<List<PendingRequest>> incoming = this.repository.incomingRequests(player.getUniqueId());
         CompletableFuture<List<PendingRequest>> outgoing = this.repository.outgoingRequests(player.getUniqueId());
-        incoming.thenCombine(outgoing, (in, out) -> {
+        incoming.thenCombine(outgoing, PendingLists::new).thenCompose(pending -> {
+            List<UUID> ids = new ArrayList<>();
+            pending.incoming().forEach(request -> ids.add(request.senderUuid()));
+            pending.outgoing().forEach(request -> ids.add(request.targetUuid()));
+            return this.proxySettings.loadMany(ids).thenRun(() -> {
             player.sendMessage(this.messages.component(language, "pending.header", Map.of()));
-            if (in.isEmpty()) {
+            if (pending.incoming().isEmpty()) {
                 player.sendMessage(this.messages.component(language, "pending.incoming-empty", Map.of()));
             } else {
-                player.sendMessage(this.messages.component(language, "pending.incoming-title", Map.of("count", String.valueOf(in.size()))));
-                for (PendingRequest request : in) {
-                    player.sendMessage(this.messages.component(language, "pending.incoming-entry", pendingPlaceholders(request)));
+                player.sendMessage(this.messages.component(language, "pending.incoming-title", Map.of("count", String.valueOf(pending.incoming().size()))));
+                for (PendingRequest request : pending.incoming()) {
+                    player.sendMessage(this.messages.component(language, "pending.incoming-entry", pendingPlaceholders(request), this.playerResolver(request.senderUuid(), request.username(), "")));
                 }
             }
-            if (out.isEmpty()) {
+            if (pending.outgoing().isEmpty()) {
                 player.sendMessage(this.messages.component(language, "pending.outgoing-empty", Map.of()));
             } else {
-                player.sendMessage(this.messages.component(language, "pending.outgoing-title", Map.of("count", String.valueOf(out.size()))));
-                for (PendingRequest request : out) {
-                    player.sendMessage(this.messages.component(language, "pending.outgoing-entry", pendingPlaceholders(request)));
+                player.sendMessage(this.messages.component(language, "pending.outgoing-title", Map.of("count", String.valueOf(pending.outgoing().size()))));
+                for (PendingRequest request : pending.outgoing()) {
+                    player.sendMessage(this.messages.component(language, "pending.outgoing-entry", pendingPlaceholders(request), this.playerResolver(request.targetUuid(), request.username(), "")));
                 }
             }
-            return null;
+            });
         });
     }
 
     public void toggle(Player player, String setting) {
-        Language language = this.languages.language(player);
+        Language language = this.proxySettings.language(player);
         if (!this.config.socialSettingKeys().contains(setting)) {
             send(player, language, "settings.unknown", "setting", setting);
             return;
@@ -351,7 +354,7 @@ public final class FriendService {
                         if (!settings.showConnectionNotifications()) {
                             return;
                         }
-                        this.feedback.send(target, this.languages.language(target), joined ? "friend-join" : "friend-quit", placeholders(actor, null));
+                        this.feedback.send(target, this.proxySettings.language(target), joined ? "friend-join" : "friend-quit", placeholders(actor, null), this.playerResolver(actor));
                     }));
                 }
             });
@@ -384,16 +387,16 @@ public final class FriendService {
     }
 
     private void notifyRequest(Player sender, Player target) {
-        Language language = this.languages.language(target);
+        Language language = this.proxySettings.language(target);
         this.feedback.send(target, language, "request-received", Map.of(
-            "player", sender.getUsername(),
+            "player_name", Messages.escape(sender.getUsername()),
             "accept", "/friend accept " + sender.getUsername(),
             "deny", "/friend deny " + sender.getUsername()
-        ));
+        ), this.proxySettings.playerResolver(sender, ""));
     }
 
-    private void feedback(Player player, Language language, String action, String placeholder, String value) {
-        this.feedback.send(player, language, action, Map.of(placeholder, Messages.escape(value)));
+    private void feedback(Player player, Language language, String action, Profile actor) {
+        this.feedback.send(player, language, action, Map.of("player_name", Messages.escape(actor.username())), this.playerResolver(actor));
     }
 
     private Map<String, String> placeholders(Profile profile, PresenceService.PresenceActivity state) {
@@ -410,8 +413,7 @@ public final class FriendService {
             activity = rich.mode() + (rich.map() == null || rich.map().isBlank() ? "" : " - " + rich.map());
         }
         Map<String, String> map = new HashMap<>();
-        map.put("player", Messages.escape(profile.username()));
-        map.put("prefix", profile.lastKnownPrefix() == null ? "" : profile.lastKnownPrefix());
+        map.put("player_name", Messages.escape(profile.username()));
         map.put("group", profile.lastKnownPrimaryGroup() == null ? "" : Messages.escape(profile.lastKnownPrimaryGroup()));
         map.put("message_command", "/" + this.config.commands().primary() + " msg " + profile.username() + " ");
         map.put("status", status);
@@ -431,9 +433,8 @@ public final class FriendService {
     }
 
     private Map<String, String> pendingPlaceholders(PendingRequest request) {
-        String player = Messages.escape(request.username());
         return Map.of(
-            "player", player,
+            "player_name", Messages.escape(request.username()),
             "accept_command", "/" + this.config.commands().primary() + " accept " + request.username(),
             "deny_command", "/" + this.config.commands().primary() + " deny " + request.username(),
             "withdraw_command", "/" + this.config.commands().primary() + " withdraw " + request.username()
@@ -453,11 +454,26 @@ public final class FriendService {
         this.messages.send(player, language, key, Map.of(placeholder, Messages.escape(value)));
     }
 
+    private void send(Player player, Language language, String key, Profile actor) {
+        this.messages.send(player, language, key, Map.of("player_name", Messages.escape(actor.username())), this.playerResolver(actor));
+    }
+
     private void send(Player player, Language language, String key, Map<String, String> placeholders) {
         this.messages.send(player, language, key, placeholders);
     }
 
     private static CompletableFuture<Void> done() {
         return CompletableFuture.completedFuture(null);
+    }
+
+    private TagResolver playerResolver(Profile profile) {
+        return this.proxySettings.playerResolver(profile.uuid(), profile.username(), profile.lastKnownPrefix());
+    }
+
+    private TagResolver playerResolver(UUID uuid, String username, String prefix) {
+        return this.proxySettings.playerResolver(uuid, username, prefix);
+    }
+
+    private record PendingLists(List<PendingRequest> incoming, List<PendingRequest> outgoing) {
     }
 }

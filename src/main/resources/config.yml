@@ -1,4 +1,4 @@
-config-version: 5
+config-version: 6
 
 database:
   host: "127.0.0.1"
@@ -7,11 +7,6 @@ database:
   username: "friends"
   password: "change-me"
   table-prefix: "friends_"
-
-network-player-settings:
-  enabled: true
-  table-prefix: "nps_"
-  default-language: "es"
 
 redis:
   host: "127.0.0.1"
@@ -66,6 +61,9 @@ cache:
   settings-ttl: "2m"
   activity-page-ttl: "5s"
   presence-ttl: "90s"
+
+display:
+  player-identity-format: "<player_prefix><country_flag> <player_nick>"
 
 feedback:
   actions:

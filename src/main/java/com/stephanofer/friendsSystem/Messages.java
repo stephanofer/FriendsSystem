@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Objects;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 
 public final class Messages {
 
@@ -47,7 +48,11 @@ public final class Messages {
     }
 
     public Component component(Language language, String key, Map<String, String> placeholders) {
-        return this.miniMessage.deserialize(this.raw(language, key, placeholders));
+        return this.component(language, key, placeholders, TagResolver.empty());
+    }
+
+    public Component component(Language language, String key, Map<String, String> placeholders, TagResolver resolver) {
+        return this.miniMessage.deserialize(this.raw(language, key, placeholders), resolver);
     }
 
     public String raw(Language language, String key, Map<String, String> placeholders) {
@@ -70,6 +75,10 @@ public final class Messages {
 
     public void send(Player player, Language language, String key, Map<String, String> placeholders) {
         player.sendMessage(this.component(language, key, placeholders));
+    }
+
+    public void send(Player player, Language language, String key, Map<String, String> placeholders, TagResolver resolver) {
+        player.sendMessage(this.component(language, key, placeholders, resolver));
     }
 
     private YamlDocument document(Language language) {

@@ -17,6 +17,7 @@ repositories {
 dependencies {
     compileOnly("com.velocitypowered:velocity-api:3.5.0-SNAPSHOT")
     compileOnly("net.luckperms:api:5.5")
+    compileOnly("com.stephanofer:proxysettings:1.0")
 
     implementation("com.stephanofer.boostedyaml:boosted-yaml:1.3.7")
     implementation("com.github.ben-manes.caffeine:caffeine:3.2.4")
@@ -42,6 +43,7 @@ tasks.build {
 }
 
 tasks.shadowJar {
+    destinationDirectory.set(layout.projectDirectory.dir("target"))
     archiveClassifier.set("")
     mergeServiceFiles()
     exclude("INFO_BIN", "INFO_SRC", "README")
@@ -67,6 +69,10 @@ tasks.shadowJar {
     relocate("reactor", "com.stephanofer.friendssystem.libs.reactor")
     relocate("org.reactivestreams", "com.stephanofer.friendssystem.libs.reactivestreams")
     relocate("io.netty", "com.stephanofer.friendssystem.libs.netty")
+}
+
+tasks.jar {
+    destinationDirectory.set(layout.projectDirectory.dir("target"))
 }
 
 tasks.test {

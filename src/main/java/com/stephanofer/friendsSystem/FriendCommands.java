@@ -23,7 +23,7 @@ public final class FriendCommands {
     private final FriendService friends;
     private final SocialMessageService messages;
     private final Messages renderer;
-    private final LanguageService languages;
+    private final ProxySettingsGateway proxySettings;
     private final PluginConfig config;
     private final FriendSuggestionCache suggestionCache;
 
@@ -33,7 +33,7 @@ public final class FriendCommands {
         FriendService friends,
         SocialMessageService messages,
         Messages renderer,
-        LanguageService languages,
+        ProxySettingsGateway proxySettings,
         PluginConfig config,
         FriendSuggestionCache suggestionCache
     ) {
@@ -42,7 +42,7 @@ public final class FriendCommands {
         this.friends = friends;
         this.messages = messages;
         this.renderer = renderer;
-        this.languages = languages;
+        this.proxySettings = proxySettings;
         this.config = config;
         this.suggestionCache = suggestionCache;
     }
@@ -254,7 +254,7 @@ public final class FriendCommands {
             Map.entry("toggle_command", "/" + root + " toggle ")
         );
         if (source instanceof Player player) {
-            this.sendHelp(source, this.languages.language(player), placeholders);
+            this.sendHelp(source, this.proxySettings.language(player), placeholders);
             return;
         }
         this.sendHelp(source, Language.EN, placeholders);

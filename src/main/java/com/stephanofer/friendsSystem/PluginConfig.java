@@ -19,12 +19,12 @@ import java.util.Objects;
 
 public record PluginConfig(
     Database database,
-    NetworkPlayerSettings networkPlayerSettings,
     Redis redis,
     Friends friends,
     Limits limits,
     Commands commands,
     Cache cache,
+    Display display,
     Feedback feedback
 ) {
 
@@ -55,11 +55,6 @@ public record PluginConfig(
                     document.getString("database.username"),
                     document.getString("database.password"),
                     document.getString("database.table-prefix")
-                ),
-                new NetworkPlayerSettings(
-                    document.getBoolean("network-player-settings.enabled"),
-                    document.getString("network-player-settings.table-prefix"),
-                    Language.fromCode(document.getString("network-player-settings.default-language"))
                 ),
                 new Redis(
                     document.getString("redis.host"),
@@ -106,6 +101,7 @@ public record PluginConfig(
                     duration(document.getString("cache.activity-page-ttl")),
                     duration(document.getString("cache.presence-ttl"))
                 ),
+                new Display(document.getString("display.player-identity-format")),
                 new Feedback(feedbackActions(document))
             );
         }
@@ -230,7 +226,6 @@ public record PluginConfig(
     }
 
     public record Database(String host, int port, String database, String username, String password, String tablePrefix) {}
-    public record NetworkPlayerSettings(boolean enabled, String tablePrefix, Language defaultLanguage) {}
     public record Redis(String host, int port, int database, String username, String password, boolean ssl, String keyPrefix, String environment, String serverId) {}
     public record Friends(Duration requestExpiration, Duration offlineMessageExpiration, int pageSize, int messageMaxLength) {}
     public record Limits(LimitGroup friends, LimitGroup offlineMessages) {}
@@ -243,6 +238,7 @@ public record PluginConfig(
     }
     public record Suggestions(Duration cacheTtl, int emptyInputMaxResults, int filteredMaxResults, int queryMaxResults) {}
     public record Cache(Duration friendsTtl, Duration settingsTtl, Duration activityPageTtl, Duration presenceTtl) {}
+    public record Display(String playerIdentityFormat) {}
     public record Feedback(Map<String, FeedbackAction> actions) {
         public FeedbackAction action(String key) {
             return this.actions.getOrDefault(key, FeedbackAction.chat(defaultFeedbackMessage(key)));

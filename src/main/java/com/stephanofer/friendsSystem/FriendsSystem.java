@@ -13,6 +13,7 @@ import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.PluginContainer;
+import com.velocitypowered.api.plugin.Dependency;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -43,7 +44,8 @@ import org.slf4j.Logger;
     id = "friendssystem",
     name = "FriendsSystem",
     version = "1.0",
-    authors = {"Stephanofer"}
+    authors = {"Stephanofer"},
+    dependencies = @Dependency(id = "proxysettings")
 )
 public final class FriendsSystem {
 
@@ -59,7 +61,7 @@ public final class FriendsSystem {
     private FriendRepository repository;
     private FriendSuggestionCache suggestionCache;
     private LuckPermsGateway luckPerms;
-    private LanguageService languages;
+    private ProxySettingsGateway proxySettings;
     private PresenceService presence;
     private FeedbackService feedback;
     private FriendService friends;
@@ -114,7 +116,7 @@ public final class FriendsSystem {
             this.repository = new FriendRepository(this.database, this.config);
             this.suggestionCache = new FriendSuggestionCache(this.repository, this.config);
             this.luckPerms = new LuckPermsGateway(this.logger, this.config);
-            this.languages = new LanguageService(this.database, this.config);
+            this.proxySettings = new ProxySettingsGateway(this.config);
             this.presence = new PresenceService(this.server, this.redis, this.config);
             this.feedback = new FeedbackService(this.messages, this.config, this.logger);
             this.friends = new FriendService(
@@ -122,7 +124,7 @@ public final class FriendsSystem {
                 this.repository,
                 this.presence,
                 this.luckPerms,
-                this.languages,
+                this.proxySettings,
                 this.messages,
                 this.config,
                 this.feedback,
@@ -132,7 +134,7 @@ public final class FriendsSystem {
                 this.server,
                 this.repository,
                 this.presence,
-                this.languages,
+                this.proxySettings,
                 this.messages,
                 this.config,
                 this.feedback,
@@ -156,7 +158,7 @@ public final class FriendsSystem {
     @Subscribe
     public void onPostLogin(PostLoginEvent event) {
         var player = event.getPlayer();
-        this.languages.loadOnJoin(player);
+        this.proxySettings.load(player);
         this.luckPerms.snapshot(player).thenAccept(snapshot -> this.repository.upsertProfile(
             player.getUniqueId(),
             player.getUsername(),
@@ -190,7 +192,7 @@ public final class FriendsSystem {
         var player = event.getPlayer();
         this.presence.markOffline(player);
         this.repository.markLastSeen(player.getUniqueId());
-        this.languages.evict(player.getUniqueId());
+        this.proxySettings.evict(player.getUniqueId());
         this.offlineInboxNotified.remove(player.getUniqueId());
         this.friends.notifyFriendsConnection(player, false);
     }
@@ -207,7 +209,7 @@ public final class FriendsSystem {
         MinecraftExceptionHandler.<CommandSource>createNative()
             .defaultHandlers()
             .registerTo(manager);
-        new FriendCommands(manager, this.server, this.friends, this.socialMessages, this.messages, this.languages, this.config, this.suggestionCache)
+        new FriendCommands(manager, this.server, this.friends, this.socialMessages, this.messages, this.proxySettings, this.config, this.suggestionCache)
             .register();
     }
 
