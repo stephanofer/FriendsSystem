@@ -1,4 +1,4 @@
-config-version: 7
+config-version: 8
 
 help.header: "<gradient:#6fffe9:#5bc0be><bold>FriendsSystem</bold></gradient> <dark_gray>·</dark_gray> <gray>Click en un comando para usarlo rápido</gray>"
 help.add: "<click:suggest_command:'{add_command}'><hover:show_text:'<aqua>Preparar solicitud de amistad'><dark_gray>•</dark_gray> <aqua>/{command} add <jugador></aqua> <gray>Enviar solicitud.</gray></hover></click>"
@@ -52,6 +52,7 @@ pending.outgoing-entry: "<dark_gray>•</dark_gray> <player_identity> <gray>en e
 pending.outgoing-empty: "<gray>No tenés solicitudes enviadas.</gray>"
 settings.unknown: "<red>Setting desconocido: <white>{setting}</white>.</red>"
 settings.changed: "<green><white>{setting}</white> ahora es <white>{value}</white>.</green>"
+cooldown: "<yellow>Esperá <white>{seconds}s</white> antes de usar eso otra vez.</yellow>"
 notify.join: "<gray>Tu amigo</gray> <player_identity> <gray>se conectó.</gray>"
 notify.quit: "<gray>Tu amigo</gray> <player_identity> <gray>se desconectó.</gray>"
 message.empty: "<red>El mensaje está vacío.</red>"

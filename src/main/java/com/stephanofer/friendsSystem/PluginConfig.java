@@ -23,8 +23,10 @@ public record PluginConfig(
     Friends friends,
     Limits limits,
     Commands commands,
+    Cooldowns cooldowns,
     Cache cache,
     Display display,
+    Debug debug,
     Feedback feedback
 ) {
 
@@ -95,6 +97,15 @@ public record PluginConfig(
                         positive(document.getInt("commands.suggestions.query-max-results"), 100)
                     )
                 ),
+                new Cooldowns(
+                    duration(document.getString("cooldowns.list")),
+                    duration(document.getString("cooldowns.message")),
+                    duration(document.getString("cooldowns.reply")),
+                    duration(document.getString("cooldowns.broadcast")),
+                    duration(document.getString("cooldowns.toggle")),
+                    duration(document.getString("cooldowns.pending")),
+                    duration(document.getString("cooldowns.inbox"))
+                ),
                 new Cache(
                     duration(document.getString("cache.friends-ttl")),
                     duration(document.getString("cache.settings-ttl")),
@@ -102,6 +113,16 @@ public record PluginConfig(
                     duration(document.getString("cache.presence-ttl"))
                 ),
                 new Display(document.getString("display.player-identity-format")),
+                new Debug(
+                    document.getBoolean("debug.enabled", false),
+                    document.getBoolean("debug.presence", true),
+                    document.getBoolean("debug.settings", true),
+                    document.getBoolean("debug.notifications", true),
+                    document.getBoolean("debug.broadcasts", true),
+                    document.getBoolean("debug.prefixes", true),
+                    document.getBoolean("debug.friend-list", true),
+                    document.getBoolean("debug.identity", true)
+                ),
                 new Feedback(feedbackActions(document))
             );
         }
@@ -113,6 +134,9 @@ public record PluginConfig(
 
     public static Duration duration(String value) {
         String text = value.trim().toLowerCase();
+        if (text.endsWith("ms")) {
+            return Duration.ofMillis(Long.parseLong(text.substring(0, text.length() - 2)));
+        }
         long amount = Long.parseLong(text.substring(0, text.length() - 1));
         return switch (text.charAt(text.length() - 1)) {
             case 's' -> Duration.ofSeconds(amount);
@@ -237,8 +261,16 @@ public record PluginConfig(
         }
     }
     public record Suggestions(Duration cacheTtl, int emptyInputMaxResults, int filteredMaxResults, int queryMaxResults) {}
+    public record Cooldowns(Duration list, Duration message, Duration reply, Duration broadcast, Duration toggle, Duration pending, Duration inbox) {
+        public Duration max() {
+            return List.of(this.list, this.message, this.reply, this.broadcast, this.toggle, this.pending, this.inbox).stream()
+                .max(Duration::compareTo)
+                .orElse(Duration.ofSeconds(1));
+        }
+    }
     public record Cache(Duration friendsTtl, Duration settingsTtl, Duration activityPageTtl, Duration presenceTtl) {}
     public record Display(String playerIdentityFormat) {}
+    public record Debug(boolean enabled, boolean presence, boolean settings, boolean notifications, boolean broadcasts, boolean prefixes, boolean friendList, boolean identity) {}
     public record Feedback(Map<String, FeedbackAction> actions) {
         public FeedbackAction action(String key) {
             return this.actions.getOrDefault(key, FeedbackAction.chat(defaultFeedbackMessage(key)));

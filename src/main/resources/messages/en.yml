@@ -1,4 +1,4 @@
-config-version: 7
+config-version: 8
 
 help.header: "<gradient:#6fffe9:#5bc0be><bold>FriendsSystem</bold></gradient> <dark_gray>·</dark_gray> <gray>Click a command for quick access</gray>"
 help.add: "<click:suggest_command:'{add_command}'><hover:show_text:'<aqua>Prepare a friend request'><dark_gray>•</dark_gray> <aqua>/{command} add <player></aqua> <gray>Send a request.</gray></hover></click>"
@@ -52,6 +52,7 @@ pending.outgoing-entry: "<dark_gray>•</dark_gray> <player_identity> <gray>wait
 pending.outgoing-empty: "<gray>No outgoing requests.</gray>"
 settings.unknown: "<red>Unknown setting: <white>{setting}</white>.</red>"
 settings.changed: "<green><white>{setting}</white> is now <white>{value}</white>.</green>"
+cooldown: "<yellow>Wait <white>{seconds}s</white> before using that again.</yellow>"
 notify.join: "<gray>Your friend</gray> <player_identity> <gray>joined.</gray>"
 notify.quit: "<gray>Your friend</gray> <player_identity> <gray>left.</gray>"
 message.empty: "<red>The message is empty.</red>"

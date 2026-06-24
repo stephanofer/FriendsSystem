@@ -32,7 +32,7 @@ public final class LuckPermsGateway {
         }
         User user = this.luckPerms.getUserManager().getUser(player.getUniqueId());
         if (user == null) {
-            return CompletableFuture.completedFuture(LuckPermsSnapshot.empty());
+            return this.loadOfflineSnapshot(player.getUniqueId());
         }
         return CompletableFuture.completedFuture(snapshot(user));
     }
@@ -57,7 +57,10 @@ public final class LuckPermsGateway {
         if (this.luckPerms == null) {
             return CompletableFuture.completedFuture(LuckPermsSnapshot.empty());
         }
-        return this.luckPerms.getUserManager().loadUser(uuid).thenApply(LuckPermsGateway::snapshot);
+        return this.luckPerms.getUserManager().loadUser(uuid).thenApply(LuckPermsGateway::snapshot).exceptionally(throwable -> {
+            this.logger.warn("Unable to resolve LuckPerms snapshot for {}. Using empty prefix.", uuid, throwable);
+            return LuckPermsSnapshot.empty();
+        });
     }
 
     private static LuckPermsSnapshot snapshot(User user) {

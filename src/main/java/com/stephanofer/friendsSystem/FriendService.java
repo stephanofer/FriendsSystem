@@ -4,6 +4,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -24,6 +25,8 @@ public final class FriendService {
     private final PluginConfig config;
     private final FeedbackService feedback;
     private final FriendSuggestionCache suggestions;
+    private final DebugLogger debug;
+    private final CommandCooldowns cooldowns;
     private final Cache<UUID, List<Profile>> friendCache;
 
     public FriendService(
@@ -35,7 +38,9 @@ public final class FriendService {
         Messages messages,
         PluginConfig config,
         FeedbackService feedback,
-        FriendSuggestionCache suggestions
+        FriendSuggestionCache suggestions,
+        DebugLogger debug,
+        CommandCooldowns cooldowns
     ) {
         this.server = server;
         this.repository = repository;
@@ -46,6 +51,8 @@ public final class FriendService {
         this.config = config;
         this.feedback = feedback;
         this.suggestions = suggestions;
+        this.debug = debug;
+        this.cooldowns = cooldowns;
         this.friendCache = Caffeine.newBuilder().expireAfterWrite(config.cache().friendsTtl()).build();
     }
 
@@ -122,12 +129,12 @@ public final class FriendService {
                     this.invalidate(target.getUniqueId(), sender.uuid());
                     this.suggestions.invalidate(target.getUniqueId(), sender.uuid());
                     feedback(target, language, "request-accepted", sender);
-                    this.server.getPlayer(sender.uuid()).ifPresent(player -> feedback(
+                    this.server.getPlayer(sender.uuid()).ifPresent(player -> this.playerProfile(target).thenAccept(targetProfile -> feedback(
                         player,
                         this.proxySettings.language(player),
                         "request-accepted-target",
-                        new Profile(target.getUniqueId(), target.getUsername(), target.getUsername().toLowerCase(), "", "", null)
-                    ));
+                        targetProfile
+                    )));
                 }).exceptionally(throwable -> {
                     send(target, language, "friend.limit-target", sender);
                     return null;
@@ -149,13 +156,13 @@ public final class FriendService {
                     return;
                 }
                 this.suggestions.invalidate(target.getUniqueId(), sender.uuid());
-                feedback(target, language, "request-denied", sender);
-                this.server.getPlayer(sender.uuid()).ifPresent(player -> feedback(
+                    feedback(target, language, "request-denied", sender);
+                this.server.getPlayer(sender.uuid()).ifPresent(player -> this.playerProfile(target).thenAccept(targetProfile -> feedback(
                     player,
                     this.proxySettings.language(player),
                     "request-denied-target",
-                    new Profile(target.getUniqueId(), target.getUsername(), target.getUsername().toLowerCase(), "", "", null)
-                ));
+                    targetProfile
+                )));
             });
         });
     }
@@ -249,7 +256,20 @@ public final class FriendService {
 
     public void list(Player viewer, int page) {
         Language language = this.proxySettings.language(viewer);
+        Duration remaining = this.cooldowns.list(viewer.getUniqueId());
+        if (!remaining.isZero()) {
+            sendCooldown(viewer, language, remaining);
+            return;
+        }
+        String source = this.friendCache.getIfPresent(viewer.getUniqueId()) == null ? "database" : "friend-cache";
         this.friends(viewer.getUniqueId()).thenCompose(friends -> {
+            this.debug.friendList("Friend list loaded", Map.of(
+                "viewer", viewer.getUsername(),
+                "viewerUuid", viewer.getUniqueId().toString(),
+                "source", source,
+                "friendCount", String.valueOf(friends.size()),
+                "friends", friendSummary(friends)
+            ));
             if (friends.isEmpty()) {
                 send(viewer, language, "list.empty", Map.of("command", this.config.commands().primary()));
                 return done();
@@ -276,6 +296,21 @@ public final class FriendService {
                     Profile profile = visible.get(index);
                     FriendSettings settings = settingFutures.get(index).join();
                     PresenceService.PresenceActivity state = applyPrivacy(states.get(profile.uuid()), settings);
+                    this.debug.friendList("Friend list entry rendered", Map.ofEntries(
+                        Map.entry("viewer", viewer.getUsername()),
+                        Map.entry("viewerUuid", viewer.getUniqueId().toString()),
+                        Map.entry("target", profile.username()),
+                        Map.entry("targetUuid", profile.uuid().toString()),
+                        Map.entry("targetPrefix", profile.lastKnownPrefix() == null ? "" : profile.lastKnownPrefix()),
+                        Map.entry("targetGroup", profile.lastKnownPrimaryGroup() == null ? "" : profile.lastKnownPrimaryGroup()),
+                        Map.entry("targetShowOnlineStatus", Boolean.toString(settings.showOnlineStatus())),
+                        Map.entry("targetShowActivity", Boolean.toString(settings.showActivity())),
+                        Map.entry("liveVelocityOnline", Boolean.toString(this.server.getPlayer(profile.uuid()).isPresent())),
+                        Map.entry("presenceVisible", Boolean.toString(state != null && state.presence() != null)),
+                        Map.entry("presenceServer", state == null || state.presence() == null ? "" : state.presence().server()),
+                        Map.entry("activityVisible", Boolean.toString(state != null && state.activity() != null)),
+                        Map.entry("renderedStatus", state == null || state.presence() == null ? "offline" : "online")
+                    ));
                     viewer.sendMessage(this.messages.component(language, "list.entry", placeholders(profile, state), this.playerResolver(profile)));
                 }
                 });
@@ -285,6 +320,11 @@ public final class FriendService {
 
     public void pending(Player player) {
         Language language = this.proxySettings.language(player);
+        Duration remaining = this.cooldowns.pending(player.getUniqueId());
+        if (!remaining.isZero()) {
+            sendCooldown(player, language, remaining);
+            return;
+        }
         CompletableFuture<List<PendingRequest>> incoming = this.repository.incomingRequests(player.getUniqueId());
         CompletableFuture<List<PendingRequest>> outgoing = this.repository.outgoingRequests(player.getUniqueId());
         incoming.thenCombine(outgoing, PendingLists::new).thenCompose(pending -> {
@@ -298,7 +338,7 @@ public final class FriendService {
             } else {
                 player.sendMessage(this.messages.component(language, "pending.incoming-title", Map.of("count", String.valueOf(pending.incoming().size()))));
                 for (PendingRequest request : pending.incoming()) {
-                    player.sendMessage(this.messages.component(language, "pending.incoming-entry", pendingPlaceholders(request), this.playerResolver(request.senderUuid(), request.username(), "")));
+                    player.sendMessage(this.messages.component(language, "pending.incoming-entry", pendingPlaceholders(request), this.playerResolver(request.senderUuid(), request.username(), request.lastKnownPrefix())));
                 }
             }
             if (pending.outgoing().isEmpty()) {
@@ -306,7 +346,7 @@ public final class FriendService {
             } else {
                 player.sendMessage(this.messages.component(language, "pending.outgoing-title", Map.of("count", String.valueOf(pending.outgoing().size()))));
                 for (PendingRequest request : pending.outgoing()) {
-                    player.sendMessage(this.messages.component(language, "pending.outgoing-entry", pendingPlaceholders(request), this.playerResolver(request.targetUuid(), request.username(), "")));
+                    player.sendMessage(this.messages.component(language, "pending.outgoing-entry", pendingPlaceholders(request), this.playerResolver(request.targetUuid(), request.username(), request.lastKnownPrefix())));
                 }
             }
             });
@@ -315,6 +355,11 @@ public final class FriendService {
 
     public void toggle(Player player, String setting) {
         Language language = this.proxySettings.language(player);
+        Duration remaining = this.cooldowns.toggle(player.getUniqueId());
+        if (!remaining.isZero()) {
+            sendCooldown(player, language, remaining);
+            return;
+        }
         if (!this.config.socialSettingKeys().contains(setting)) {
             send(player, language, "settings.unknown", "setting", setting);
             return;
@@ -330,7 +375,15 @@ public final class FriendService {
                 default -> true;
             };
             return this.repository.setSetting(player.getUniqueId(), setting, newValue).thenAccept(_ ->
-                send(player, language, "settings.changed", Map.of("setting", setting, "value", Boolean.toString(newValue)))
+                {
+                    this.debug.settings("Setting changed", Map.of(
+                        "player", player.getUsername(),
+                        "uuid", player.getUniqueId().toString(),
+                        "setting", setting,
+                        "value", Boolean.toString(newValue)
+                    ));
+                    send(player, language, "settings.changed", Map.of("setting", setting, "value", Boolean.toString(newValue)));
+                }
             );
         });
     }
@@ -346,16 +399,61 @@ public final class FriendService {
     public void notifyFriendsConnection(Player player, boolean joined, Profile actor) {
         this.repository.settings(player.getUniqueId()).thenAccept(playerSettings -> {
             if (!playerSettings.showOnlineStatus()) {
+                this.debug.notifications("Connection notification skipped", Map.of(
+                    "actor", player.getUsername(),
+                    "joined", Boolean.toString(joined),
+                    "actorShowOnlineStatus", Boolean.toString(playerSettings.showOnlineStatus()),
+                    "delivered", "false",
+                    "reason", "actor-hidden-online-status"
+                ));
                 return;
             }
             this.friends(player.getUniqueId()).thenAccept(friends -> {
                 for (Profile friend : friends) {
-                    this.server.getPlayer(friend.uuid()).ifPresent(target -> this.repository.settings(target.getUniqueId()).thenAccept(settings -> {
+                    Optional<Player> targetOptional = this.server.getPlayer(friend.uuid());
+                    if (targetOptional.isEmpty()) {
+                        this.debug.notifications("Connection notification", Map.of(
+                            "actor", player.getUsername(),
+                            "target", friend.username(),
+                            "joined", Boolean.toString(joined),
+                            "actorShowOnlineStatus", Boolean.toString(playerSettings.showOnlineStatus()),
+                            "targetOnline", "false",
+                            "delivered", "false",
+                            "reason", "target-offline"
+                        ));
+                        continue;
+                    }
+                    Player target = targetOptional.get();
+                    this.repository.settings(target.getUniqueId()).thenAccept(settings -> {
+                        boolean delivered = false;
+                        String reason = "delivered";
                         if (!settings.showConnectionNotifications()) {
+                            reason = "target-disabled-notifications";
+                            this.debug.notifications("Connection notification", Map.of(
+                                "actor", player.getUsername(),
+                                "target", target.getUsername(),
+                                "joined", Boolean.toString(joined),
+                                "actorShowOnlineStatus", Boolean.toString(playerSettings.showOnlineStatus()),
+                                "targetShowConnectionNotifications", Boolean.toString(settings.showConnectionNotifications()),
+                                "targetOnline", "true",
+                                "delivered", Boolean.toString(delivered),
+                                "reason", reason
+                            ));
                             return;
                         }
+                        delivered = true;
                         this.feedback.send(target, this.proxySettings.language(target), joined ? "friend-join" : "friend-quit", placeholders(actor, null), this.playerResolver(actor));
-                    }));
+                        this.debug.notifications("Connection notification", Map.of(
+                            "actor", player.getUsername(),
+                            "target", target.getUsername(),
+                            "joined", Boolean.toString(joined),
+                            "actorShowOnlineStatus", Boolean.toString(playerSettings.showOnlineStatus()),
+                            "targetShowConnectionNotifications", Boolean.toString(settings.showConnectionNotifications()),
+                            "targetOnline", "true",
+                            "delivered", Boolean.toString(delivered),
+                            "reason", reason
+                        ));
+                    });
                 }
             });
         });
@@ -375,24 +473,39 @@ public final class FriendService {
     private CompletableFuture<Optional<Profile>> resolveTarget(String name) {
         Optional<Player> online = this.server.getPlayer(name);
         if (online.isPresent()) {
-            Player player = online.get();
-            this.luckPerms.snapshot(player).thenAccept(snapshot -> this.repository.upsertProfile(
-                player.getUniqueId(), player.getUsername(), snapshot.prefix(), snapshot.primaryGroup()
-            ));
-            return CompletableFuture.completedFuture(Optional.of(new Profile(
-                player.getUniqueId(), player.getUsername(), player.getUsername().toLowerCase(), "", "", null
-            )));
+            return this.playerProfile(online.get()).thenApply(Optional::of);
         }
         return this.repository.findProfileByName(name);
     }
 
     private void notifyRequest(Player sender, Player target) {
         Language language = this.proxySettings.language(target);
-        this.feedback.send(target, language, "request-received", Map.of(
-            "player_name", Messages.escape(sender.getUsername()),
-            "accept", "/friend accept " + sender.getUsername(),
-            "deny", "/friend deny " + sender.getUsername()
-        ), this.proxySettings.playerResolver(sender, ""));
+        this.playerProfile(sender).thenAccept(profile -> this.feedback.send(target, language, "request-received", Map.of(
+            "player_name", Messages.escape(profile.username()),
+            "accept", "/friend accept " + profile.username(),
+            "deny", "/friend deny " + profile.username()
+        ), this.playerResolver(profile)));
+    }
+
+    private CompletableFuture<Profile> playerProfile(Player player) {
+        return this.luckPerms.snapshot(player).thenCompose(snapshot -> this.repository.upsertProfile(
+            player.getUniqueId(), player.getUsername(), snapshot.prefix(), snapshot.primaryGroup()
+        ).thenApply(_ -> {
+            this.debug.prefixes("LuckPerms profile snapshot", Map.of(
+                "player", player.getUsername(),
+                "uuid", player.getUniqueId().toString(),
+                "prefix", snapshot.prefix(),
+                "primaryGroup", snapshot.primaryGroup()
+            ));
+            return new Profile(
+                player.getUniqueId(),
+                player.getUsername(),
+                player.getUsername().toLowerCase(),
+                snapshot.prefix(),
+                snapshot.primaryGroup(),
+                null
+            );
+        }));
     }
 
     private void feedback(Player player, Language language, String action, Profile actor) {
@@ -441,6 +554,17 @@ public final class FriendService {
         );
     }
 
+    private static String friendSummary(List<Profile> friends) {
+        if (friends.isEmpty()) {
+            return "[]";
+        }
+        return friends.stream()
+            .map(profile -> profile.username() + "(" + profile.uuid() + ")")
+            .reduce((first, second) -> first + ", " + second)
+            .map(value -> "[" + value + "]")
+            .orElse("[]");
+    }
+
     private void invalidate(UUID first, UUID second) {
         this.friendCache.invalidate(first);
         this.friendCache.invalidate(second);
@@ -460,6 +584,11 @@ public final class FriendService {
 
     private void send(Player player, Language language, String key, Map<String, String> placeholders) {
         this.messages.send(player, language, key, placeholders);
+    }
+
+    private void sendCooldown(Player player, Language language, Duration remaining) {
+        long seconds = Math.max(1, (long) Math.ceil(remaining.toMillis() / 1000.0));
+        this.messages.send(player, language, "cooldown", Map.of("seconds", String.valueOf(seconds)));
     }
 
     private static CompletableFuture<Void> done() {

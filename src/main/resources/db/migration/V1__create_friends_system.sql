@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS `${tablePrefix}profiles` (
     `last_seen_at` TIMESTAMP NULL,
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY `uk_profiles_username_lower` (`username_lower`)
+    KEY `idx_profiles_username_lower` (`username_lower`),
+    KEY `idx_profiles_username_updated` (`username_lower`, `updated_at`)
 );
 
 CREATE TABLE IF NOT EXISTS `${tablePrefix}edges` (

@@ -29,6 +29,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -64,6 +65,8 @@ public final class FriendsSystem {
     private ProxySettingsGateway proxySettings;
     private PresenceService presence;
     private FeedbackService feedback;
+    private DebugLogger debug;
+    private CommandCooldowns cooldowns;
     private FriendService friends;
     private SocialMessageService socialMessages;
     private final List<ScheduledTask> tasks = new ArrayList<>();
@@ -117,8 +120,10 @@ public final class FriendsSystem {
             this.suggestionCache = new FriendSuggestionCache(this.repository, this.config);
             this.luckPerms = new LuckPermsGateway(this.logger, this.config);
             this.proxySettings = new ProxySettingsGateway(this.config);
-            this.presence = new PresenceService(this.server, this.redis, this.config);
             this.feedback = new FeedbackService(this.messages, this.config, this.logger);
+            this.debug = new DebugLogger(this.logger, this.config.debug());
+            this.presence = new PresenceService(this.server, this.redis, this.config, this.debug);
+            this.cooldowns = new CommandCooldowns(this.config.cooldowns());
             this.friends = new FriendService(
                 this.server,
                 this.repository,
@@ -128,7 +133,9 @@ public final class FriendsSystem {
                 this.messages,
                 this.config,
                 this.feedback,
-                this.suggestionCache
+                this.suggestionCache,
+                this.debug,
+                this.cooldowns
             );
             this.socialMessages = new SocialMessageService(
                 this.server,
@@ -138,7 +145,9 @@ public final class FriendsSystem {
                 this.messages,
                 this.config,
                 this.feedback,
-                this.luckPerms
+                this.luckPerms,
+                this.debug,
+                this.cooldowns
             );
 
             this.registerCommands();
@@ -164,7 +173,7 @@ public final class FriendsSystem {
             player.getUsername(),
             snapshot.prefix(),
             snapshot.primaryGroup()
-        ).thenRun(() -> this.friends.notifyFriendsConnection(player, true, new Profile(
+        ).thenRun(() -> this.logIdentityConflicts(player)).thenRun(() -> this.friends.notifyFriendsConnection(player, true, new Profile(
             player.getUniqueId(),
             player.getUsername(),
             player.getUsername().toLowerCase(),
@@ -178,6 +187,7 @@ public final class FriendsSystem {
     @Subscribe
     public void onServerConnected(ServerConnectedEvent event) {
         Player player = event.getPlayer();
+        this.presence.markOnline(player);
         if (!this.offlineInboxNotified.add(player.getUniqueId())) {
             return;
         }
@@ -213,9 +223,23 @@ public final class FriendsSystem {
             .register();
     }
 
+    private void logIdentityConflicts(Player player) {
+        this.repository.identityConflicts(player.getUsername(), player.getUniqueId()).thenAccept(conflicts -> {
+            for (Profile conflict : conflicts) {
+                this.debug.identity("Username identity conflict", Map.of(
+                    "username", player.getUsername(),
+                    "currentUuid", player.getUniqueId().toString(),
+                    "conflictingUuid", conflict.uuid().toString(),
+                    "conflictingPrimaryGroup", conflict.lastKnownPrimaryGroup() == null ? "" : conflict.lastKnownPrimaryGroup(),
+                    "action", "kept-current-uuid"
+                ));
+            }
+        });
+    }
+
     private void registerTasks() {
         this.tasks.add(this.server.getScheduler()
-            .buildTask(this, () -> this.server.getAllPlayers().forEach(this.presence::markOnline))
+            .buildTask(this, () -> this.server.getAllPlayers().forEach(this.presence::heartbeat))
             .repeat(30, TimeUnit.SECONDS)
             .schedule());
         this.tasks.add(this.server.getScheduler()

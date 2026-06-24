@@ -1,4 +1,4 @@
-config-version: 6
+config-version: 9
 
 database:
   host: "127.0.0.1"
@@ -56,6 +56,15 @@ commands:
     filtered-max-results: 50
     query-max-results: 100
 
+cooldowns:
+  list: "750ms"
+  message: "500ms"
+  reply: "500ms"
+  broadcast: "5s"
+  toggle: "1s"
+  pending: "1s"
+  inbox: "1s"
+
 cache:
   friends-ttl: "2m"
   settings-ttl: "2m"
@@ -64,6 +73,16 @@ cache:
 
 display:
   player-identity-format: "<player_prefix><country_flag> <player_nick>"
+
+debug:
+  enabled: false
+  presence: true
+  settings: true
+  notifications: true
+  broadcasts: true
+  prefixes: true
+  friend-list: true
+  identity: true
 
 feedback:
   actions:

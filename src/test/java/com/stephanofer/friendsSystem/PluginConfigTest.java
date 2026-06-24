@@ -16,6 +16,7 @@ class PluginConfigTest {
 
     @Test
     void parsesCompactDurations() {
+        assertEquals(Duration.ofMillis(750), PluginConfig.duration("750ms"));
         assertEquals(Duration.ofSeconds(5), PluginConfig.duration("5s"));
         assertEquals(Duration.ofMinutes(2), PluginConfig.duration("2m"));
         assertEquals(Duration.ofHours(3), PluginConfig.duration("3h"));
@@ -40,6 +41,13 @@ class PluginConfigTest {
         assertEquals(20, config.commands().suggestions().emptyInputMaxResults());
         assertEquals(50, config.commands().suggestions().filteredMaxResults());
         assertEquals(100, config.commands().suggestions().queryMaxResults());
+        assertEquals(Duration.ofMillis(750), config.cooldowns().list());
+        assertEquals(Duration.ofMillis(500), config.cooldowns().message());
+        assertEquals(Duration.ofSeconds(5), config.cooldowns().broadcast());
+        assertTrue(config.debug().presence());
+        assertTrue(config.debug().prefixes());
+        assertTrue(config.debug().friendList());
+        assertTrue(config.debug().identity());
         assertEquals(50, config.limits().friends().defaultLimit());
         assertEquals("friendssystem.limit.vip", config.limits().friends().permissions().get(1).permission());
         assertEquals(100, config.limits().friends().permissions().get(1).limit());

@@ -61,13 +61,31 @@ public final class FriendRepository {
     public CompletableFuture<Optional<Profile>> findProfileByName(String username) {
         return this.database.query(connection -> {
             try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT * FROM " + this.database.table("profiles") + " WHERE username_lower = ?"
+                "SELECT * FROM " + this.database.table("profiles") + " WHERE username_lower = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1"
             )) {
                 statement.setString(1, username.toLowerCase());
                 try (ResultSet result = statement.executeQuery()) {
                     return result.next() ? Optional.of(readProfile(result)) : Optional.empty();
                 }
             }
+        });
+    }
+
+    public CompletableFuture<List<Profile>> identityConflicts(String username, UUID currentUuid) {
+        return this.database.query(connection -> {
+            List<Profile> conflicts = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT * FROM " + this.database.table("profiles") + " WHERE username_lower = ? AND player_uuid <> ? ORDER BY updated_at DESC, created_at DESC"
+            )) {
+                statement.setString(1, username.toLowerCase());
+                statement.setBytes(2, Sql.uuidBytes(currentUuid));
+                try (ResultSet result = statement.executeQuery()) {
+                    while (result.next()) {
+                        conflicts.add(readProfile(result));
+                    }
+                }
+            }
+            return conflicts;
         });
     }
 
@@ -302,7 +320,7 @@ public final class FriendRepository {
         return this.database.query(connection -> {
             List<OfflineMessage> messages = new ArrayList<>();
             try (PreparedStatement statement = connection.prepareStatement("""
-                SELECT m.id, m.sender_uuid, COALESCE(p.username, 'Jugador') AS sender_name, m.message, m.created_at
+                SELECT m.id, m.sender_uuid, COALESCE(p.username, 'Jugador') AS sender_name, p.last_known_prefix, m.message, m.created_at
                 FROM %s m LEFT JOIN %s p ON p.player_uuid = m.sender_uuid
                 WHERE m.target_uuid = ? AND m.delivered_at IS NULL AND m.expires_at > CURRENT_TIMESTAMP
                 ORDER BY m.created_at ASC LIMIT ? OFFSET ?
@@ -316,6 +334,7 @@ public final class FriendRepository {
                             result.getLong("id"),
                             Sql.uuid(result, "sender_uuid"),
                             result.getString("sender_name"),
+                            result.getString("last_known_prefix"),
                             result.getString("message"),
                             result.getTimestamp("created_at").toInstant()
                         ));
@@ -377,7 +396,7 @@ public final class FriendRepository {
             String subjectColumn = incoming ? "target_uuid" : "sender_uuid";
             String profileJoinColumn = incoming ? "sender_uuid" : "target_uuid";
             try (PreparedStatement statement = connection.prepareStatement("""
-                SELECT r.sender_uuid, r.target_uuid, r.created_at, r.expires_at, p.username
+                SELECT r.sender_uuid, r.target_uuid, r.created_at, r.expires_at, p.username, p.last_known_prefix
                 FROM %s r JOIN %s p ON p.player_uuid = r.%s
                 WHERE r.%s = ? AND r.expires_at > CURRENT_TIMESTAMP
                 ORDER BY r.created_at DESC
@@ -389,6 +408,7 @@ public final class FriendRepository {
                             Sql.uuid(result, "sender_uuid"),
                             Sql.uuid(result, "target_uuid"),
                             result.getString("username"),
+                            result.getString("last_known_prefix"),
                             result.getTimestamp("created_at").toInstant(),
                             result.getTimestamp("expires_at").toInstant()
                         ));
@@ -533,6 +553,6 @@ public final class FriendRepository {
         }
     }
 
-    public record OfflineMessage(long id, UUID senderUuid, String senderName, String message, Instant createdAt) {
+    public record OfflineMessage(long id, UUID senderUuid, String senderName, String lastKnownPrefix, String message, Instant createdAt) {
     }
 }
