@@ -32,8 +32,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.incendo.cloud.SenderMapper;
 import org.incendo.cloud.execution.ExecutionCoordinator;
 import org.incendo.cloud.minecraft.extras.MinecraftExceptionHandler;
@@ -71,6 +74,8 @@ public final class FriendsSystem {
     private SocialMessageService socialMessages;
     private final List<ScheduledTask> tasks = new ArrayList<>();
     private final Set<UUID> offlineInboxNotified = ConcurrentHashMap.newKeySet();
+    private final Set<CompletableFuture<Void>> pendingLastSeenWrites = ConcurrentHashMap.newKeySet();
+    private volatile boolean shuttingDown;
 
     @Inject
     public FriendsSystem(
@@ -161,6 +166,8 @@ public final class FriendsSystem {
 
     @Subscribe
     public void onProxyShutdown(ProxyShutdownEvent event) {
+        this.shuttingDown = true;
+        this.markOnlinePlayersLastSeen();
         this.closeQuietly();
     }
 
@@ -201,7 +208,9 @@ public final class FriendsSystem {
     public void onDisconnect(DisconnectEvent event) {
         var player = event.getPlayer();
         this.presence.markOffline(player);
-        this.repository.markLastSeen(player.getUniqueId());
+        if (!this.shuttingDown) {
+            this.trackLastSeenWrite(this.repository.markLastSeen(player.getUniqueId()));
+        }
         this.proxySettings.evict(player.getUniqueId());
         this.offlineInboxNotified.remove(player.getUniqueId());
         this.friends.notifyFriendsConnection(player, false);
@@ -255,15 +264,49 @@ public final class FriendsSystem {
     }
 
     private void closeQuietly() {
+        this.shuttingDown = true;
         for (ScheduledTask task : this.tasks) {
             task.cancel();
         }
         this.tasks.clear();
+        this.awaitPendingLastSeenWrites();
         if (this.redis != null) {
             this.redis.close();
         }
         if (this.database != null) {
             this.database.close();
+        }
+    }
+
+    private void trackLastSeenWrite(CompletableFuture<Void> future) {
+        this.pendingLastSeenWrites.add(future);
+        future.whenComplete((ignored, throwable) -> this.pendingLastSeenWrites.remove(future));
+    }
+
+    private void markOnlinePlayersLastSeen() {
+        if (this.repository == null) {
+            return;
+        }
+        for (Player player : this.server.getAllPlayers()) {
+            this.trackLastSeenWrite(this.repository.markLastSeen(player.getUniqueId()));
+        }
+    }
+
+    private void awaitPendingLastSeenWrites() {
+        CompletableFuture<?>[] pending = this.pendingLastSeenWrites.stream()
+            .map(future -> future.exceptionally(throwable -> null))
+            .toArray(CompletableFuture[]::new);
+        if (pending.length == 0) {
+            return;
+        }
+        try {
+            CompletableFuture.allOf(pending).orTimeout(3, TimeUnit.SECONDS).join();
+        } catch (CompletionException exception) {
+            if (exception.getCause() instanceof TimeoutException) {
+                this.logger.warn("Timed out while waiting for pending last-seen writes during shutdown.");
+            } else {
+                throw exception;
+            }
         }
     }
 }
